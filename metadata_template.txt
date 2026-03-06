@@ -1,0 +1,136 @@
+# ============================================================
+# Auto-Sampler CLI — Instrument Metadata Template
+# ============================================================
+# Copy this file into your instrument folder as "metadata.txt"
+# and fill in the values for your specific recording session.
+# Lines starting with # are comments and are ignored.
+
+# ------------------------------------------------------------
+# RECORDING PARAMETERS — sustain.wav
+# These MUST match the generate_midi.py settings used to
+# create the MIDI file that was rendered to sustain.wav
+# ------------------------------------------------------------
+
+# Number of velocity layers recorded  (X in generate_midi.py)
+velocity_layers = 4
+
+# Semitone interval between sampled notes  (N in generate_midi.py)
+# 1 = every semitone, 2 = every other, 3 = every 3rd, etc.
+semitone_interval = 3
+
+# Hold time in seconds — how long each note was held  (H for sustain MIDI)
+hold_time = 4.0
+
+# Release time in seconds — silence captured after note-off  (R for sustain MIDI)
+# This is the gap between notes in the sustain recording.
+release_time = 2.0
+
+# MIDI note number the recording starts from  (default: 21 = A0)
+start_note = 21
+
+# MIDI note number the recording ends at  (default: 108 = C8)
+end_note = 108
+
+# ------------------------------------------------------------
+# RECORDING PARAMETERS — release.wav  (only needed if release.wav exists)
+# sustain.wav and release.wav may have been generated with different
+# H and R values. Set these if your release MIDI used different timings.
+# If omitted, the values above (hold_time / release_time) are used.
+# ------------------------------------------------------------
+
+# Hold time used when recording release.wav  (H for release MIDI)
+# release_hold_time = 4.0
+
+# Tail capture time used when recording release.wav  (R for release MIDI)
+# release_release_time = 3.0
+
+# ------------------------------------------------------------
+# OUTPUT SAMPLE SELECTION
+# Filter and thin the recorded note/velocity set for the output SFZ
+# ------------------------------------------------------------
+
+# Lowest MIDI note to include in the output  (21=A0, 36=C2, 60=C4)
+min_note = 21
+
+# Highest MIDI note to include in the output  (108=C8, 96=C7, 84=C6)
+max_note = 108
+
+# Percentage of notes in [min_note, max_note] to include  (1–100)
+# 100 = all recorded notes in range
+# 50  = evenly-spaced half of notes in range
+note_percentage = 100
+
+# Number of velocity layers to include in the output  (1 to velocity_layers)
+velocity_layers_out = 4
+
+# ------------------------------------------------------------
+# CROSSFADE
+# ------------------------------------------------------------
+
+# Percentage of each velocity zone's width that overlaps with adjacent layers
+# 0  = hard velocity boundaries (no crossfade)
+# 20 = each boundary overlaps 20% of the zone width on each side
+# 50 = half of each zone overlaps the neighbouring zone
+crossfade_percent = 20
+
+# ------------------------------------------------------------
+# NORMALIZATION
+# ------------------------------------------------------------
+
+# Enable normalization  (true / false)
+normalize = true
+
+# Normalization mode — three options:
+#
+#   lufs     — Group-LUFS normalization (ITU-R BS.1770-4).
+#              One scale factor per velocity layer brings the mean loudness
+#              of all notes in that layer to normalize_target_lufs.
+#              Relative timbral differences between notes are preserved.
+#
+#   rms      — Same as lufs but uses RMS energy instead of LUFS.
+#              Useful for very short samples where LUFS measurement is unreliable.
+#
+#   velocity — Per-note linear gain curve.
+#              Measures the peak level at min and max recorded velocities,
+#              fits a linear dB slope, then boosts each velocity so all layers
+#              for a note peak at the same level as the loudest.
+#              The dynamic range (dB) is written into the SFZ as amp_velcurve_1.
+#
+normalize_mode = lufs
+
+# Target loudness in LUFS (or dB RMS if mode = rms)
+normalize_target_lufs = -18.0
+
+# Peak ceiling in dBFS — hard limiter applied after normalization
+peak_ceiling_db = -1.0
+
+# Velocity dynamic range in dB — controls amp_velcurve_1 in the SFZ.
+# Only used when normalize_mode = lufs or rms.
+# (When normalize_mode = velocity this is computed automatically from audio.)
+velocity_dynamic_range_db = 40.0
+
+# ------------------------------------------------------------
+# SFZ / PLAYBACK
+# ------------------------------------------------------------
+
+# Instrument name — used for the output folder name and SFZ filenames
+instrument_name = MyInstrument
+
+# Sampler release time in seconds  (ampeg_release in sustain SFZ)
+# Also used as ampeg_attack in the release SFZ.
+ampeg_release = 0.5
+
+# Loop crossfade duration in milliseconds  (loop_crossfade opcode)
+loop_crossfade_ms = 20.0
+
+# ------------------------------------------------------------
+# ADVANCED  (safe to leave at defaults)
+# ------------------------------------------------------------
+
+# Onset detection threshold in dBFS
+# Leading silence below this level is trimmed from each sample
+onset_threshold_db = -40.0
+
+# Collapse stereo audio to mono  (true / false)
+# If true, stereo samples are summed to mono on input (before all processing)
+collapse_to_mono = false
