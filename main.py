@@ -13,6 +13,7 @@ target_dir should contain one or more instrument subfolders, each with:
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 
@@ -33,31 +34,55 @@ def process_instrument(instrument_dir: Path, output_dir: Path) -> bool:
 
     Returns True on success, False if the instrument should be skipped.
     """
-    from src.metadata_parser import parse_metadata, MetadataError
+    from src.metadata_parser import MetadataError
+    from src.input_module import load_instrument
     from src.pipeline import Pipeline
-    from src.base import PassthroughProcessor  # placeholder until phases 2–5
+    from src.processors import TrimProcessor, NormalizeProcessor, LoopFinderProcessor
+    from src.output_module import write_instrument
 
     name = instrument_dir.name
-    print(f"\n[{name}] Loading metadata...")
+    print(f"\n[{name}] Loading...")
 
+    # ── Load ──────────────────────────────────────────────────────────────────
     try:
-        meta = parse_metadata(instrument_dir / "metadata.txt")
+        data = load_instrument(instrument_dir)
     except (FileNotFoundError, MetadataError) as exc:
         print(f"  WARNING: Skipping '{name}' — {exc}")
         return False
+    except Exception as exc:
+        print(f"  WARNING: Skipping '{name}' — unexpected load error: {exc}")
+        traceback.print_exc()
+        return False
 
-    # Phase 2 will replace this stub with the real InputModule
-    print(f"  instrument_name : {meta.instrument_name}")
-    print(f"  velocity_layers : {meta.velocity_layers}")
-    print(f"  semitone_interval: {meta.semitone_interval}")
-    print(f"  note range       : {meta.start_note}–{meta.end_note}")
-    print(f"  [stub] InputModule not yet implemented — skipping audio load")
+    n_sus = len(data.sustain)
+    n_rel = len(data.release)
+    print(f"  {n_sus} sustain sample(s), {n_rel} release sample(s)")
 
-    # Processor chain (phases 2–5 will populate this)
-    # pipeline = Pipeline([TrimProcessor(), NormalizeProcessor(), LoopFinderProcessor()])
-    # result = pipeline.run(instrument_data)
-    # OutputModule(output_dir).write(result)
+    # ── Process ───────────────────────────────────────────────────────────────
+    try:
+        pipeline = Pipeline([
+            TrimProcessor(),
+            NormalizeProcessor(),
+            LoopFinderProcessor(),
+        ])
+        data = pipeline.run(data)
+    except Exception as exc:
+        print(f"  WARNING: Skipping '{name}' — processing error: {exc}")
+        traceback.print_exc()
+        return False
 
+    # ── Write output ──────────────────────────────────────────────────────────
+    try:
+        result = write_instrument(data, output_dir)
+    except Exception as exc:
+        print(f"  WARNING: Skipping '{name}' — output error: {exc}")
+        traceback.print_exc()
+        return False
+
+    print(f"  {result['files_written']} FLAC file(s) written")
+    print(f"  {result['sustain_regions']} sustain region(s), "
+          f"{result['release_regions']} release region(s)")
+    print(f"  Output: {result['output_dir']}")
     return True
 
 
