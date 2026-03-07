@@ -90,24 +90,30 @@ def _slice_wav(
     Returns:
         List of Sample objects, one per (note, velocity) pair within [min_note, max_note].
     """
-    note_duration = hold_time + release_time
     frames_hold = int(round(hold_time * sr))
     frames_release = int(round(release_time * sr))
     total_frames = audio.shape[0]
+
+    if extract_release:
+        # release.wav events are only release_time seconds long (no hold portion)
+        event_duration = release_time
+        slice_offset = 0
+        slice_len_frames = frames_release
+    else:
+        # sustain.wav events are hold_time + release_time seconds long
+        event_duration = hold_time + release_time
+        slice_offset = 0
+        slice_len_frames = frames_hold
 
     samples: List[Sample] = []
     event_index = 0
 
     for note in notes:
         for vel in velocities:
-            event_start = int(round(event_index * note_duration * sr))
+            event_start = int(round(event_index * event_duration * sr))
 
-            if extract_release:
-                slice_start = event_start + frames_hold
-                slice_len = frames_release
-            else:
-                slice_start = event_start
-                slice_len = frames_hold
+            slice_start = event_start + slice_offset
+            slice_len = slice_len_frames
 
             slice_end = slice_start + slice_len
 

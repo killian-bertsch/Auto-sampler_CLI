@@ -68,12 +68,21 @@ def make_long_wav(
     Each note-event slot is filled with a DC tone at a unique amplitude so
     tests can verify the correct slice was extracted.
     """
-    note_duration = hold_time + release_time
-    frames_per_event = int(round(note_duration * sr))
     frames_hold = int(round(hold_time * sr))
     frames_release = int(round(release_time * sr))
 
     total_events = len(notes) * len(velocities)
+
+    if extract_release:
+        # release.wav: each event slot is only release_time seconds (no hold portion)
+        event_duration = release_time
+        seg_len = frames_release
+    else:
+        # sustain.wav: each event slot is hold_time + release_time seconds
+        event_duration = hold_time + release_time
+        seg_len = frames_hold
+
+    frames_per_event = int(round(event_duration * sr))
     total_frames = total_events * frames_per_event
 
     if n_channels == 1:
@@ -86,15 +95,8 @@ def make_long_wav(
         for vel in velocities:
             # Use a unique DC value so we can assert which slice was picked
             dc_value = (note * 1000 + vel) / 1_000_000.0
-            event_start = int(round(event_index * note_duration * sr))
-
-            if extract_release:
-                seg_start = event_start + frames_hold
-                seg_len = frames_release
-            else:
-                seg_start = event_start
-                seg_len = frames_hold
-
+            event_start = int(round(event_index * event_duration * sr))
+            seg_start = event_start  # signal always starts at beginning of event slot
             seg_end = seg_start + seg_len
             if n_channels == 1:
                 audio[seg_start:seg_end] = dc_value
@@ -180,21 +182,23 @@ class TestSliceWav:
 
     def _make_audio(self, notes, velocities, hold, release, extract_release=False):
         """Build a synthetic long WAV array matching the given params."""
-        note_duration = hold + release
         frames_hold = int(round(hold * self.SR))
         frames_release = int(round(release * self.SR))
-        total_frames = len(notes) * len(velocities) * int(round(note_duration * self.SR))
+        if extract_release:
+            # release.wav: events are only release_time long, signal at start
+            event_duration = release
+            seg_len = frames_release
+        else:
+            event_duration = hold + release
+            seg_len = frames_hold
+        total_frames = len(notes) * len(velocities) * int(round(event_duration * self.SR))
         audio = np.zeros(total_frames, dtype=np.float64)
         idx = 0
         for note in notes:
             for vel in velocities:
-                ev_start = int(round(idx * note_duration * self.SR))
+                ev_start = int(round(idx * event_duration * self.SR))
                 dc = (note * 1000 + vel) / 1_000_000.0
-                if extract_release:
-                    s = ev_start + frames_hold
-                    audio[s:s + frames_release] = dc
-                else:
-                    audio[ev_start:ev_start + frames_hold] = dc
+                audio[ev_start:ev_start + seg_len] = dc
                 idx += 1
         return audio
 
