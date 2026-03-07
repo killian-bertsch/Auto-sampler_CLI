@@ -60,7 +60,7 @@ _FIELDS: list[tuple[str, type, bool, Any]] = [
     ("peak_ceiling_db",          float, False, -1.0),
     ("velocity_dynamic_range_db",float, False, 40.0),
     # SFZ / Playback
-    ("instrument_name",          str,   True,  None),
+    ("instrument_name",          str,   False, ""),
     ("ampeg_release",            float, False, 0.5),
     ("loop_crossfade_ms",        float, False, 20.0),
     # Advanced

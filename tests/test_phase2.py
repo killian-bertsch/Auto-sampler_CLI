@@ -40,7 +40,6 @@ release_time = {r}
 start_note = {start}
 end_note = {end}
 velocity_layers_out = {x}
-instrument_name = TestPiano
 """
 
 

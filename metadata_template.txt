@@ -113,8 +113,7 @@ velocity_dynamic_range_db = 40.0
 # SFZ / PLAYBACK
 # ------------------------------------------------------------
 
-# Instrument name — used for the output folder name and SFZ filenames
-instrument_name = MyInstrument
+# Instrument name is derived automatically from the folder name.
 
 # Sampler release time in seconds  (ampeg_release in sustain SFZ)
 # Also used as ampeg_attack in the release SFZ.

@@ -257,7 +257,6 @@ VALID_METADATA = """\
     hold_time = 4.0
     release_time = 2.0
     velocity_layers_out = 4
-    instrument_name = TestPiano
 """
 
 
@@ -269,7 +268,7 @@ class TestMetadataParser:
         assert meta.semitone_interval == 3
         assert meta.hold_time == 4.0
         assert meta.release_time == 2.0
-        assert meta.instrument_name == "TestPiano"
+        assert meta.instrument_name == ""  # set by load_instrument from folder name
 
     def test_defaults_applied(self, tmp_path):
         p = write_metadata(tmp_path, VALID_METADATA)
@@ -342,13 +341,13 @@ class TestMetadataParser:
             parse_metadata(p)
 
     def test_missing_required_field(self, tmp_path):
-        # Remove instrument_name (required)
+        # Remove velocity_layers (required)
         content = "\n".join(
             line for line in VALID_METADATA.splitlines()
-            if "instrument_name" not in line
+            if "velocity_layers" not in line
         )
         p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError, match="instrument_name"):
+        with pytest.raises(MetadataError, match="velocity_layers"):
             parse_metadata(p)
 
     def test_invalid_int(self, tmp_path):

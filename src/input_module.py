@@ -187,6 +187,7 @@ def load_instrument(folder_path: str | Path) -> InstrumentData:
         raise FileNotFoundError(f"sustain.wav not found in: {folder}")
 
     meta: InstrumentMeta = parse_metadata(meta_path)
+    meta.instrument_name = folder.name
 
     notes = _get_recorded_notes(meta.start_note, meta.end_note, meta.semitone_interval)
     velocities = _compute_velocities(meta.velocity_layers)
