@@ -95,9 +95,10 @@ def _slice_wav(
     total_frames = audio.shape[0]
 
     if extract_release:
-        # release.wav events are only release_time seconds long (no hold portion)
-        event_duration = release_time
-        slice_offset = 0
+        # release.wav is structured identically to sustain.wav (H+R per event),
+        # but we extract only the tail (after note-off), so skip frames_hold.
+        event_duration = hold_time + release_time
+        slice_offset = frames_hold
         slice_len_frames = frames_release
     else:
         # sustain.wav events are hold_time + release_time seconds long
