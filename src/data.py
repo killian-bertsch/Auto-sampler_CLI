@@ -30,6 +30,7 @@ class Sample:
     loop_end: Optional[int] = None     # sample index into audio
 
 
+
 @dataclass
 class InstrumentMeta:
     """All fields parsed from metadata.txt."""
@@ -64,7 +65,7 @@ class InstrumentMeta:
     loop_crossfade_ms: float      # loop_crossfade opcode value in ms
 
     # --- Advanced ---
-    onset_threshold_db: float     # leading silence trim threshold in dBFS
+    pre_trim_ms: float = 0.0      # ms to cut from the front of every sample
 
     # --- Optional: release.wav recording overrides ---
     # sustain.wav and release.wav may have been recorded with different H and R values.
@@ -72,9 +73,21 @@ class InstrumentMeta:
     release_hold_time: Optional[float] = None    # H used when recording release.wav
     release_release_time: Optional[float] = None # R (tail capture) used when recording release.wav
 
+    # --- Transient shaper ---
+    enable_transient_shaper: bool = False   # enable SPL-style dual-envelope transient shaper
+    transient_attack_db: float = 6.0        # gain on transient portion in dB  (-12 … +12)
+    transient_sustain_db: float = 0.0       # gain on body/sustain portion in dB (-12 … +12)
+    transient_speed_ms: float = 10.0        # fast envelope time constant in ms (1 … 50)
+
     # --- Computed fields (set during processing, not from metadata.txt) ---
     computed_dynamic_range_db: Optional[float] = None  # set by NormalizeProcessor (velocity mode)
     collapse_to_mono: bool = False                      # mix stereo to mono on input
+
+    # --- Optional velocity map (overrides velocity_layers_out when set) ---
+    # Format: "lo-hi:n, lo-hi:n, ..."  e.g. "0-63:1, 64-127:5"
+    # Each segment picks n evenly-spaced layers from the recorded velocities
+    # that fall within [lo, hi]. velocity_layers_out is ignored when this is set.
+    velocity_map: Optional[str] = None
 
     def effective_release_hold_time(self) -> float:
         """Return release_hold_time, falling back to hold_time if not set."""

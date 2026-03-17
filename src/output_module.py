@@ -22,6 +22,7 @@ import numpy as np
 import soundfile as sf
 
 from .data import InstrumentData, InstrumentMeta, Sample
+from .metadata_parser import parse_velocity_map
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,33 @@ def select_velocities(velocities: List[int], velocity_layers_out: int) -> List[i
         return [velocities[-1]]
     indices = {round(i * (n - 1) / (k - 1)) for i in range(k)}
     return [velocities[i] for i in sorted(indices)]
+
+
+def select_velocities_segmented(velocities: List[int], velocity_map: str) -> List[int]:
+    """
+    Select velocity layers according to a segment map string.
+
+    Format: "lo-hi:n, lo-hi:n, ..."
+      Each segment picks n evenly-spaced layers from the recorded velocities
+      whose value falls within [lo, hi]. Segments may overlap; duplicates are
+      deduplicated in the final result.
+
+    `velocities` must be sorted ascending.
+
+    When a segment contains fewer recorded velocities than n, all velocities
+    in that segment are used (no error — it's a soft ceiling).
+
+    Returns a sorted, deduplicated list of selected velocity values.
+    """
+    segments = parse_velocity_map(velocity_map)
+    selected: set[int] = set()
+    for lo, hi, n in segments:
+        in_range = [v for v in velocities if lo <= v <= hi]
+        if not in_range:
+            continue
+        chosen = select_velocities(in_range, n)
+        selected.update(chosen)
+    return sorted(selected)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +324,7 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
 
     Steps:
       1. Apply note subset selection (note_percentage within [min_note, max_note])
-      2. Apply velocity subset selection (velocity_layers_out evenly spaced)
+      2. Apply velocity subset selection (velocity_map segments, or velocity_layers_out evenly spaced)
       3. Compute key zones and velocity zones (with crossfade)
       4. Encode each selected sustain sample to 24-bit FLAC
       5. Generate and write {instrument_name}_sustain.sfz
@@ -328,7 +356,10 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
 
     # Velocity layers present in sustain samples
     all_vels = sorted(set(s.velocity for s in data.sustain))
-    selected_vels = select_velocities(all_vels, meta.velocity_layers_out)
+    if meta.velocity_map is not None:
+        selected_vels = select_velocities_segmented(all_vels, meta.velocity_map)
+    else:
+        selected_vels = select_velocities(all_vels, meta.velocity_layers_out)
     vel_set = set(selected_vels)
 
     # ── Zone computation ─────────────────────────────────────────────────────
@@ -377,6 +408,20 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
 
     sustain_sfz_text = generate_sustain_sfz(sfz_regions, meta)
     (out_dir / f"{name}_sustain.sfz").write_text(sustain_sfz_text, encoding="utf-8")
+
+    # Velocity mode: write a report telling the user what dB value to set in AudioLayer
+    if meta.normalize_mode == "velocity" and meta.computed_dynamic_range_db is not None:
+        range_db = meta.computed_dynamic_range_db
+        vel1_db = -range_db  # dB level of velocity=1 relative to velocity=127
+        report = (
+            f"Velocity Dynamic Range Report — {name}\n"
+            f"{'=' * 50}\n\n"
+            f"Measured dynamic range: {range_db:.1f} dB\n\n"
+            f"In AudioLayer, set the velocity curve minimum to:\n"
+            f"  {vel1_db:.1f} dB\n\n"
+            f"(This is the gain at velocity=1 relative to velocity=127)\n"
+        )
+        (out_dir / "velocity_range.txt").write_text(report, encoding="utf-8")
 
     # ── Release samples ───────────────────────────────────────────────────────
     release_sfz_regions: List[dict] = []

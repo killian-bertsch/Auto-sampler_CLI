@@ -3,3 +3,4 @@ soundfile>=0.12
 pyloudnorm>=0.1.1
 scipy>=1.12
 pytest>=8.0
+midiutil>=1.2    # generate_session.py only

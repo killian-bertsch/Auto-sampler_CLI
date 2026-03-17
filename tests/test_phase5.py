@@ -23,6 +23,7 @@ from src.output_module import (
     midi_to_note_name,
     select_notes,
     select_velocities,
+    select_velocities_segmented,
     write_instrument,
 )
 
@@ -52,7 +53,6 @@ def _make_meta(**overrides) -> InstrumentMeta:
         instrument_name="TestInstrument",
         ampeg_release=0.5,
         loop_crossfade_ms=20.0,
-        onset_threshold_db=-40.0,
         collapse_to_mono=False,
     )
     defaults.update(overrides)
@@ -178,6 +178,106 @@ class TestSelectVelocities:
         result = select_velocities(vels, 3)
         assert all(v in vels for v in result)
         assert len(result) == 3
+
+
+# ---------------------------------------------------------------------------
+# select_velocities_segmented
+# ---------------------------------------------------------------------------
+
+class TestSelectVelocitiesSegmented:
+    # Recorded velocities simulating 8 evenly-spread layers across 1–127
+    VELS = [16, 32, 48, 64, 80, 96, 112, 127]
+
+    def test_user_example_bottom_1_top_5(self):
+        # "0-63:1, 64-127:5" — 1 layer from bottom half, 5 from top half
+        result = select_velocities_segmented(self.VELS, "0-63:1, 64-127:5")
+        bottom = [v for v in result if v <= 63]
+        top = [v for v in result if v >= 64]
+        assert len(bottom) == 1
+        assert len(top) == 5
+        assert result == sorted(result)  # sorted ascending
+
+    def test_full_range_equivalent_to_n(self):
+        # "0-127:3" should behave like select_velocities(vels, 3)
+        result = select_velocities_segmented(self.VELS, "0-127:3")
+        assert result == select_velocities(self.VELS, 3)
+
+    def test_single_layer_per_half(self):
+        result = select_velocities_segmented(self.VELS, "0-63:1, 64-127:1")
+        assert len(result) == 2
+        assert all(v in self.VELS for v in result)
+
+    def test_all_layers_single_segment(self):
+        result = select_velocities_segmented(self.VELS, "0-127:8")
+        assert result == self.VELS
+
+    def test_n_exceeds_available_uses_all(self):
+        # Only 2 velocities in range 0-63; asking for 5 should give all 2
+        result = select_velocities_segmented(self.VELS, "0-63:5")
+        assert result == [v for v in self.VELS if v <= 63]
+
+    def test_empty_segment_range_skipped(self):
+        # No recorded velocities in 100-110 range
+        result = select_velocities_segmented(self.VELS, "100-110:3, 111-127:1")
+        assert all(v in self.VELS for v in result)
+        assert all(v >= 100 for v in result)
+
+    def test_overlapping_segments_deduped(self):
+        # Both segments include velocity 64; result should not have duplicates
+        result = select_velocities_segmented(self.VELS, "0-64:8, 64-127:8")
+        assert len(result) == len(set(result))
+
+    def test_result_sorted(self):
+        result = select_velocities_segmented(self.VELS, "64-127:2, 0-63:2")
+        assert result == sorted(result)
+
+    def test_single_velocity_list(self):
+        result = select_velocities_segmented([64], "0-127:1")
+        assert result == [64]
+
+    def test_empty_velocity_list(self):
+        result = select_velocities_segmented([], "0-127:3")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# parse_velocity_map errors
+# ---------------------------------------------------------------------------
+
+from src.metadata_parser import parse_velocity_map, MetadataError
+
+class TestParseVelocityMap:
+    def test_valid_two_segments(self):
+        result = parse_velocity_map("0-63:1, 64-127:5")
+        assert result == [(0, 63, 1), (64, 127, 5)]
+
+    def test_single_segment(self):
+        assert parse_velocity_map("0-127:4") == [(0, 127, 4)]
+
+    def test_sorted_by_lo(self):
+        result = parse_velocity_map("64-127:2, 0-63:1")
+        assert result[0][0] == 0
+        assert result[1][0] == 64
+
+    def test_bad_format_raises(self):
+        with pytest.raises(MetadataError):
+            parse_velocity_map("garbage")
+
+    def test_lo_greater_than_hi_raises(self):
+        with pytest.raises(MetadataError):
+            parse_velocity_map("90-10:2")
+
+    def test_n_zero_raises(self):
+        with pytest.raises(MetadataError):
+            parse_velocity_map("0-127:0")
+
+    def test_out_of_range_raises(self):
+        with pytest.raises(MetadataError):
+            parse_velocity_map("0-200:2")
+
+    def test_empty_string_raises(self):
+        with pytest.raises(MetadataError):
+            parse_velocity_map("")
 
 
 # ---------------------------------------------------------------------------

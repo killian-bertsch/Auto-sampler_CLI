@@ -45,7 +45,6 @@ def make_meta(**kwargs) -> InstrumentMeta:
         instrument_name="TestInst",
         ampeg_release=0.5,
         loop_crossfade_ms=20.0,
-        onset_threshold_db=-40.0,
     )
     defaults.update(kwargs)
     return InstrumentMeta(**defaults)

@@ -1,0 +1,66 @@
+# Auto-Sampler CLI — Instrument Metadata
+# Copy to your instrument folder as "metadata.toml" and fill in your values.
+
+# ─── RECORDING ───────────────────────────────────────────────────────────────
+# Must match the generate_midi.py settings used to create your MIDI file.
+
+velocity_layers   = 18      # number of velocity layers recorded
+semitone_interval = 1      # semitone steps between notes (1=every, 2=every other…)
+hold_time         = 10.0    # seconds each note was held (sustain.wav)
+release_time      = 0.5    # silence after note-off (sustain.wav)
+start_note        = 21     # lowest recorded MIDI note  (21 = A0)
+end_note          = 108    # highest recorded MIDI note (108 = C8)
+
+# Only needed if release.wav was recorded with different hold/release timings.
+# If omitted, the values above are used for release.wav as well.
+release_hold_time    = 0.5
+release_release_time = 1.0
+
+# ─── OUTPUT SELECTION ────────────────────────────────────────────────────────
+# Filter and thin the recorded set for the output SFZ.
+
+min_note             = 21     # lowest MIDI note to include in output
+max_note             = 108    # highest MIDI note to include in output
+note_percentage      = 100    # % of notes in range to keep (50 = evenly-spaced half)
+velocity_layers_out  = 4      # how many velocity layers in the output (1–velocity_layers)
+
+# Optional: override velocity_layers_out with per-range layer counts.
+# Format: "lo-hi:n, lo-hi:n, ..."   e.g. sparse low end, dense high end:
+# velocity_map = "0-63:1, 64-127:5"
+
+# ─── CROSSFADE ───────────────────────────────────────────────────────────────
+
+crossfade_percent = 20    # % of velocity zone width that overlaps adjacent layers
+                          # 0 = hard boundaries, 50 = half of each zone overlaps
+
+# ─── NORMALIZATION ───────────────────────────────────────────────────────────
+
+normalize       = true
+normalize_mode  = "lufs"   # "lufs" | "rms" | "velocity"
+                           #   lufs     — group-LUFS per velocity layer → target_lufs
+                           #   rms      — same using RMS energy (better for short samples)
+                           #   velocity — linear gain curve across velocities; range auto-computed
+
+normalize_target_lufs        = -18.0   # target LUFS (or dB RMS for rms mode)
+peak_ceiling_db              = -1.0    # hard peak ceiling after normalization (dBFS)
+velocity_dynamic_range_db    = 40.0    # amp_velcurve_1 range (lufs/rms modes only)
+
+# ─── PLAYBACK / SFZ ──────────────────────────────────────────────────────────
+
+ampeg_release      = 0.5    # sampler release time in seconds
+loop_crossfade_ms  = 20.0   # loop crossfade length in milliseconds
+
+# ─── TRANSIENT SHAPER ────────────────────────────────────────────────────────
+# SPL-style dual-envelope shaper applied per sample before normalization.
+
+enable_transient_shaper = false
+transient_attack_db     = 6.0    # gain on attack portion  (-12 … +12 dB)
+transient_sustain_db    = 0.0    # gain on body/sustain    (-12 … +12 dB)
+transient_speed_ms      = 10.0   # fast envelope time constant (1 … 50 ms)
+                                 # lower = sharper transient detection
+
+# ─── ADVANCED ────────────────────────────────────────────────────────────────
+
+# Milliseconds to cut from the front of every sample
+pre_trim_ms = 0.0
+collapse_to_mono    = false   # mix stereo to mono on input

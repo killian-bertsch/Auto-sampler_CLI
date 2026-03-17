@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from src.data import InstrumentData, InstrumentMeta, Sample
-from src.processors.trim import TrimProcessor, _detect_onset
+from src.processors.trim import TrimProcessor
 from src.processors.normalize import (
     NormalizeProcessor,
     _remove_dc_offset,
@@ -52,7 +52,6 @@ def make_meta(**kwargs) -> InstrumentMeta:
         instrument_name="TestInst",
         ampeg_release=0.5,
         loop_crossfade_ms=20.0,
-        onset_threshold_db=-40.0,
     )
     defaults.update(kwargs)
     return InstrumentMeta(**defaults)
@@ -90,81 +89,34 @@ def make_data(sustain: list[Sample], release: list[Sample] | None = None, **meta
 # TrimProcessor tests
 # ===========================================================================
 
-class TestDetectOnset:
-    def test_immediate_signal_returns_zero(self):
-        """Signal with no leading silence → onset very near 0 (sine starts at 0)."""
-        audio = sine(amplitude=0.5)
-        assert _detect_onset(audio, SR, -40.0) <= 5
-
-    def test_leading_silence_detected(self):
-        """100 ms of silence before tone → onset near 100 ms mark."""
-        silent_samples = int(0.1 * SR)
-        audio = np.concatenate([silence(0.1), sine(amplitude=0.5)])
-        onset = _detect_onset(audio, SR, -40.0)
-        assert silent_samples - 250 <= onset <= silent_samples + 250
-
-    def test_all_silence_returns_zero(self):
-        """Fully silent signal → 0 (no onset found)."""
-        audio = silence(0.5)
-        assert _detect_onset(audio, SR, -40.0) == 0
-
-    def test_very_quiet_signal_below_threshold(self):
-        """Signal below threshold is treated as silence → 0."""
-        audio = sine(amplitude=1e-5)  # very quiet, well below -40 dB
-        assert _detect_onset(audio, SR, -40.0) == 0
-
-    def test_stereo_audio(self):
-        """Onset detection works on (N, 2) stereo arrays."""
-        silent_samples = int(0.05 * SR)
-        tone = sine(amplitude=0.5)
-        left = np.concatenate([silence(0.05), tone])
-        right = np.concatenate([silence(0.05), tone * 0.7])
-        stereo = np.stack([left, right], axis=1)
-        onset = _detect_onset(stereo, SR, -40.0)
-        assert silent_samples - 250 <= onset <= silent_samples + 250
-
-    def test_threshold_respected(self):
-        """With a very high threshold, quiet tone doesn't trigger onset."""
-        audio = sine(amplitude=0.01)  # -40 dBFS
-        onset = _detect_onset(audio, SR, -10.0)  # threshold -10 dB
-        assert onset == 0
-
-    def test_short_audio(self):
-        """Very short audio (< window size) doesn't crash."""
-        audio = np.array([0.0, 0.5, 0.0], dtype=np.float64)
-        # Should not raise
-        _detect_onset(audio, SR, -40.0)
-
-
 class TestTrimProcessor:
-    def test_trims_leading_silence(self):
-        """Leading silence is removed from sustain samples."""
-        silent_samples = int(0.1 * SR)
-        audio = np.concatenate([silence(0.1), sine(amplitude=0.5, duration=0.5)])
+    def test_trims_by_pre_trim_ms(self):
+        """pre_trim_ms=10 removes exactly 10 ms worth of samples from the front."""
+        audio = sine(amplitude=0.5, duration=0.5)
         original_len = len(audio)
         s = make_sample(audio=audio.copy())
-        data = make_data([s])
+        data = make_data([s], pre_trim_ms=10.0)
         result = TrimProcessor().process(data)
-        trimmed = result.sustain[0].audio
-        assert len(trimmed) < original_len
-        assert len(trimmed) >= int(0.5 * SR) - 250
+        expected_cut = int(0.010 * SR)
+        assert len(result.sustain[0].audio) == original_len - expected_cut
 
-    def test_no_trim_when_signal_starts_immediately(self):
-        """Audio that starts with a tone is nearly unchanged (sine starts at 0, so at most a few samples trimmed)."""
+    def test_no_trim_when_pre_trim_ms_zero(self):
+        """pre_trim_ms=0 leaves audio unchanged."""
         audio = sine(amplitude=0.5)
         s = make_sample(audio=audio.copy())
-        data = make_data([s])
+        data = make_data([s], pre_trim_ms=0.0)
         result = TrimProcessor().process(data)
-        assert len(result.sustain[0].audio) >= len(audio) - 5
+        assert len(result.sustain[0].audio) == len(audio)
 
     def test_trims_release_samples(self):
-        """TrimProcessor also trims release samples."""
-        audio = np.concatenate([silence(0.1), sine(amplitude=0.5, duration=0.3)])
+        """TrimProcessor also trims release samples by pre_trim_ms."""
+        audio = sine(amplitude=0.5, duration=0.5)
         original_len = len(audio)
         s = make_sample(audio=audio.copy())
-        data = make_data(sustain=[], release=[s])
+        data = make_data(sustain=[], release=[s], pre_trim_ms=5.0)
         result = TrimProcessor().process(data)
-        assert len(result.release[0].audio) < original_len
+        expected_cut = int(0.005 * SR)
+        assert len(result.release[0].audio) == original_len - expected_cut
 
     def test_empty_sustain_and_release(self):
         """No samples → returns data unchanged without error."""
@@ -173,47 +125,40 @@ class TestTrimProcessor:
         assert result.sustain == []
         assert result.release == []
 
-    def test_uses_meta_threshold(self):
-        """Processor uses onset_threshold_db from meta."""
-        # Signal at -30 dBFS (~0.032 amplitude)
-        audio = np.concatenate([silence(0.1), sine(amplitude=0.032)])
-        # With default -40 dB threshold: the signal exceeds threshold → trimmed
-        s1 = make_sample(audio=audio.copy())
-        data1 = make_data([s1], onset_threshold_db=-40.0)
-        result1 = TrimProcessor().process(data1)
-
-        # With -20 dB threshold: signal below threshold → not trimmed
-        s2 = make_sample(audio=audio.copy())
-        data2 = make_data([s2], onset_threshold_db=-20.0)
-        result2 = TrimProcessor().process(data2)
-
-        assert len(result1.sustain[0].audio) < len(audio)
-        assert len(result2.sustain[0].audio) == len(audio)
+    def test_pre_trim_ms_sub_millisecond(self):
+        """Fractional ms (e.g. 0.2 ms) is rounded to the nearest sample."""
+        audio = sine(amplitude=0.5, duration=0.5)
+        original_len = len(audio)
+        s = make_sample(audio=audio.copy())
+        data = make_data([s], pre_trim_ms=0.2)
+        result = TrimProcessor().process(data)
+        expected_cut = int(0.0002 * SR)
+        assert len(result.sustain[0].audio) == original_len - expected_cut
 
     def test_stereo_sample_trimmed(self):
         """Stereo (N, 2) samples are trimmed correctly."""
-        silent_samples = int(0.05 * SR)
         tone = sine(amplitude=0.5)
-        left = np.concatenate([silence(0.05), tone])
-        stereo = np.stack([left, left * 0.8], axis=1)
+        stereo = np.stack([tone, tone * 0.8], axis=1)
+        original_len = stereo.shape[0]
         s = make_sample(audio=stereo.copy())
-        data = make_data([s])
+        data = make_data([s], pre_trim_ms=5.0)
         result = TrimProcessor().process(data)
         trimmed = result.sustain[0].audio
         assert trimmed.ndim == 2
         assert trimmed.shape[1] == 2
-        assert trimmed.shape[0] < stereo.shape[0]
+        assert trimmed.shape[0] == original_len - int(0.005 * SR)
 
     def test_multiple_samples_all_trimmed(self):
-        """All samples in the list are trimmed independently."""
-        audio_a = np.concatenate([silence(0.1), sine(amplitude=0.5)])
-        audio_b = np.concatenate([silence(0.05), sine(amplitude=0.3)])
+        """All samples in the list are trimmed by the same pre_trim_ms."""
+        audio_a = sine(amplitude=0.5, duration=0.5)
+        audio_b = sine(amplitude=0.3, duration=0.3)
         s_a = make_sample(midi_note=60, audio=audio_a.copy())
         s_b = make_sample(midi_note=62, audio=audio_b.copy())
-        data = make_data([s_a, s_b])
+        data = make_data([s_a, s_b], pre_trim_ms=2.0)
         result = TrimProcessor().process(data)
-        assert len(result.sustain[0].audio) < len(audio_a)
-        assert len(result.sustain[1].audio) < len(audio_b)
+        cut = int(0.002 * SR)
+        assert len(result.sustain[0].audio) == len(audio_a) - cut
+        assert len(result.sustain[1].audio) == len(audio_b) - cut
 
     def test_processor_repr(self):
         assert "TrimProcessor" in repr(TrimProcessor())
@@ -541,16 +486,17 @@ class TestNormalizeProcessorMiscellaneous:
 
     def test_trim_then_normalize_pipeline(self):
         """TrimProcessor followed by NormalizeProcessor works end-to-end."""
-        audio = np.concatenate([silence(0.1), sine(amplitude=0.1, duration=0.5)])
+        audio = sine(amplitude=0.1, duration=0.5)
         s = make_sample(audio=audio.copy())
-        data = make_data([s], normalize_mode="rms", normalize_target_lufs=-18.0, peak_ceiling_db=-1.0)
+        data = make_data([s], normalize_mode="rms", normalize_target_lufs=-18.0, peak_ceiling_db=-1.0,
+                         pre_trim_ms=10.0)
 
         data = TrimProcessor().process(data)
         data = NormalizeProcessor().process(data)
 
         out = data.sustain[0].audio
-        # Leading silence removed
-        assert len(out) < len(audio)
+        # 10 ms cut from the front
+        assert len(out) == len(audio) - int(0.010 * SR)
         # Level near target
         level = 20.0 * np.log10(_rms(out)) if _rms(out) > 0 else -100.0
         assert abs(level - (-18.0)) < 3.0

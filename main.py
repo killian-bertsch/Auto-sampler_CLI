@@ -6,9 +6,9 @@ Usage:
     python main.py <target_dir> [--output-dir DIR] [--instrument NAME]
 
 target_dir should contain one or more instrument subfolders, each with:
-    metadata.txt
-    sustain.wav
-    release.wav  (optional)
+    metadata.txt / metadata.toml
+    sustain.wav or sustain.flac
+    release.wav or release.flac  (optional)
 """
 
 import argparse
@@ -18,12 +18,14 @@ from pathlib import Path
 
 
 def find_instruments(target_dir: Path) -> list[Path]:
-    """Return subdirectories of target_dir that contain metadata.txt + sustain.wav."""
+    """Return subdirectories of target_dir that contain metadata.toml (or legacy metadata.txt) + sustain.wav/.flac."""
     instruments = []
     for subdir in sorted(target_dir.iterdir()):
         if not subdir.is_dir():
             continue
-        if (subdir / "metadata.txt").exists() and (subdir / "sustain.wav").exists():
+        has_meta = (subdir / "metadata.toml").exists() or (subdir / "metadata.txt").exists()
+        has_sustain = (subdir / "sustain.wav").exists() or (subdir / "sustain.flac").exists()
+        if has_meta and has_sustain:
             instruments.append(subdir)
     return instruments
 
@@ -37,7 +39,7 @@ def process_instrument(instrument_dir: Path, output_dir: Path) -> bool:
     from src.metadata_parser import MetadataError
     from src.input_module import load_instrument
     from src.pipeline import Pipeline
-    from src.processors import TrimProcessor, NormalizeProcessor, LoopFinderProcessor
+    from src.processors import TrimProcessor, NormalizeProcessor, LoopFinderProcessor, TransientShaperProcessor
     from src.output_module import write_instrument
 
     name = instrument_dir.name
@@ -63,6 +65,7 @@ def process_instrument(instrument_dir: Path, output_dir: Path) -> bool:
         pipeline = Pipeline([
             TrimProcessor(),
             NormalizeProcessor(),
+            TransientShaperProcessor(),
             LoopFinderProcessor(),
         ])
         data = pipeline.run(data)
@@ -129,7 +132,7 @@ def main() -> int:
 
     if not instrument_dirs:
         print(f"No valid instrument folders found in: {target_dir}")
-        print("Each instrument folder must contain metadata.txt and sustain.wav")
+        print("Each instrument folder must contain metadata.toml (or metadata.txt) and sustain.wav or sustain.flac")
         return 1
 
     print(f"Found {len(instrument_dirs)} instrument(s) to process.")

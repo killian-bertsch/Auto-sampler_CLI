@@ -44,7 +44,6 @@ def make_meta(**overrides) -> InstrumentMeta:
         instrument_name="TestInstrument",
         ampeg_release=0.5,
         loop_crossfade_ms=20.0,
-        onset_threshold_db=-40.0,
     )
     defaults.update(overrides)
     return InstrumentMeta(**defaults)
@@ -285,7 +284,6 @@ class TestMetadataParser:
         assert meta.normalize_target_lufs == -18.0
         assert meta.peak_ceiling_db == -1.0
         assert meta.ampeg_release == 0.5
-        assert meta.onset_threshold_db == -40.0
 
     def test_release_overrides_absent_gives_none(self, tmp_path):
         p = write_metadata(tmp_path, VALID_METADATA)

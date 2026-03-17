@@ -118,7 +118,6 @@ def _make_metadata(path: Path, instrument_name: str = "TestInstrument",
         velocity_dynamic_range_db = 30.0
         ampeg_release = 0.5
         loop_crossfade_ms = 0
-        onset_threshold_db = -40.0
         collapse_to_mono = false
     """)
     if include_release_params:
