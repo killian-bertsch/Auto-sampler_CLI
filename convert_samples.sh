@@ -28,7 +28,7 @@ set -euo pipefail
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 TARGET_PEAK_DB=-6.0              # dBFS peak target for all outputs
-STEREO_INSTRUMENTS=("THEGRANDEUR")   # Keep these stereo; all others → mono
+STEREO_INSTRUMENTS=("ag", "wg", "pearl")   # Keep these stereo; all others → mono
 NUM_LAYERS=(1 2 3)               # Sustain layer numbers, in order
 # ─────────────────────────────────────────────────────────────────────────────
 
