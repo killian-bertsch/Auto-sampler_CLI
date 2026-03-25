@@ -17,6 +17,24 @@ import numpy as np
 
 
 @dataclass
+class InputSampleDef:
+    """
+    One entry in input.toml — describes a single event in samples.flac.
+
+    Events are laid out sequentially in samples.flac:
+      event_i starts at sum(def_j.hold_s + def_j.tail_s  for j < i) seconds
+
+    For is_release=False (sustain): extract [event_start, event_start + hold_s]
+    For is_release=True  (release): extract [event_start + hold_s, event_start + hold_s + tail_s]
+    """
+    note: int        # MIDI note number (0–127)
+    velocity: int    # MIDI velocity (1–127)
+    hold_s: float    # seconds the note was held
+    tail_s: float    # seconds of decay/silence captured after note-off
+    is_release: bool # True → extract tail; False → extract hold portion
+
+
+@dataclass
 class Sample:
     """Represents one individual note+velocity slice of audio."""
 
@@ -30,72 +48,41 @@ class Sample:
     loop_end: Optional[int] = None     # sample index into audio
 
 
-
 @dataclass
 class InstrumentMeta:
-    """All fields parsed from metadata.txt."""
-
-    # --- Recording parameters (must match generate_midi.py settings) ---
-    velocity_layers: int          # X: number of velocity layers recorded
-    semitone_interval: int        # N: semitone steps between recorded notes
-    hold_time: float              # H: sustain.wav — how long each note was held
-    release_time: float           # R: sustain.wav — silence captured after note-off
-    start_note: int               # lowest MIDI note in the recording (default 21)
-    end_note: int                 # highest MIDI note in the recording (default 108)
+    """All fields parsed from output.toml."""
 
     # --- Output sample selection ---
-    min_note: int                 # lowest MIDI note to include in output
-    max_note: int                 # highest MIDI note to include in output
-    note_percentage: float        # 1–100: fraction of notes in range to keep
-    velocity_layers_out: int      # how many velocity layers to include in output
+    min_note: int = 21                # lowest MIDI note to include in output
+    max_note: int = 108               # highest MIDI note to include in output
+    note_percentage: float = 100.0   # 1–100: fraction of notes in range to keep
 
     # --- Crossfade ---
-    crossfade_percent: float      # 0–100: % of velocity zone width that overlaps
+    crossfade_percent: float = 0.0   # 0–100: % of velocity zone width that overlaps
 
     # --- Normalization ---
-    normalize: bool
-    normalize_mode: str           # 'lufs', 'rms', or 'velocity'
-    normalize_target_lufs: float  # target LUFS (or dB RMS) for lufs/rms modes
-    peak_ceiling_db: float        # hard peak ceiling after normalization
-    velocity_dynamic_range_db: float  # amp_velcurve_1 range for lufs/rms modes
+    normalize: bool = True
+    normalize_mode: str = "lufs"           # 'lufs', 'rms', or 'velocity'
+    normalize_target_lufs: float = -18.0  # target LUFS (or dB RMS) for lufs/rms modes
+    peak_ceiling_db: float = -1.0         # hard peak ceiling after normalization
+    velocity_dynamic_range_db: float = 40.0  # amp_velcurve_1 range for lufs/rms modes
 
     # --- SFZ / Playback ---
-    instrument_name: str
-    ampeg_release: float          # seconds; also used as ampeg_attack in release SFZ
-    loop_crossfade_ms: float      # loop_crossfade opcode value in ms
+    instrument_name: str = ""
+    ampeg_release: float = 0.5         # seconds; also used as ampeg_attack in release SFZ
+    loop_crossfade_ms: float = 20.0    # loop_crossfade opcode value in ms
 
     # --- Advanced ---
-    pre_trim_ms: float = 0.0      # ms to cut from the front of every sample
-
-    # --- Optional: release.wav recording overrides ---
-    # sustain.wav and release.wav may have been recorded with different H and R values.
-    # If these are None, the input module falls back to hold_time / release_time.
-    release_hold_time: Optional[float] = None    # H used when recording release.wav
-    release_release_time: Optional[float] = None # R (tail capture) used when recording release.wav
+    pre_trim_ms: float = 0.0           # ms to cut from the front of every sample
 
     # --- Transient shaper ---
-    enable_transient_shaper: bool = False   # enable SPL-style dual-envelope transient shaper
-    transient_attack_db: float = 6.0        # gain on transient portion in dB  (-12 … +12)
-    transient_sustain_db: float = 0.0       # gain on body/sustain portion in dB (-12 … +12)
-    transient_speed_ms: float = 10.0        # fast envelope time constant in ms (1 … 50)
+    enable_transient_shaper: bool = False
+    transient_attack_db: float = 6.0
+    transient_sustain_db: float = 0.0
+    transient_speed_ms: float = 10.0
 
-    # --- Computed fields (set during processing, not from metadata.txt) ---
+    # --- Computed fields (set during processing, not from output.toml) ---
     computed_dynamic_range_db: Optional[float] = None  # set by NormalizeProcessor (velocity mode)
-    collapse_to_mono: bool = False                      # mix stereo to mono on input
-
-    # --- Optional velocity map (overrides velocity_layers_out when set) ---
-    # Format: "lo-hi:n, lo-hi:n, ..."  e.g. "0-63:1, 64-127:5"
-    # Each segment picks n evenly-spaced layers from the recorded velocities
-    # that fall within [lo, hi]. velocity_layers_out is ignored when this is set.
-    velocity_map: Optional[str] = None
-
-    def effective_release_hold_time(self) -> float:
-        """Return release_hold_time, falling back to hold_time if not set."""
-        return self.release_hold_time if self.release_hold_time is not None else self.hold_time
-
-    def effective_release_release_time(self) -> float:
-        """Return release_release_time, falling back to release_time if not set."""
-        return self.release_release_time if self.release_release_time is not None else self.release_time
 
 
 @dataclass
@@ -103,8 +90,8 @@ class InstrumentData:
     """
     Central data structure that flows through the entire processing pipeline.
 
-    sustain: one Sample per (note, velocity) combination from sustain.wav
-    release: same structure from release.wav; empty list if no release.wav
+    sustain: one Sample per (note, velocity) combination — the held portion
+    release: same structure for release tails; empty list if none recorded
     meta:    all configuration/metadata for this instrument
     """
 

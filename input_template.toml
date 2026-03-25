@@ -1,0 +1,38 @@
+# Auto-Sampler CLI — Input Sample Manifest
+# Copy to your instrument folder as "input.toml" and fill in your values.
+#
+# Entries must appear in the SAME ORDER as events in samples.flac.
+# Each entry describes one recorded event:
+#
+#   note       — MIDI note number (0–127)
+#   velocity   — MIDI velocity at which it was recorded (1–127)
+#   hold_s     — how long the note was held (seconds)
+#   tail_s     — how long of decay/silence was captured after note-off (seconds)
+#   is_release — true if this is a release tail sample, false for sustain
+#
+# For is_release=false (sustain): the slicer extracts [0, hold_s] of the event.
+# For is_release=true  (release): the slicer extracts [hold_s, hold_s+tail_s].
+#
+# Different notes can have different numbers of velocity layers, and each
+# sample can have different hold/tail lengths — full non-uniform support.
+#
+# Use generate_input_toml.py for uniform recordings; edit manually for non-uniform.
+
+collapse_to_mono = false   # true to mix stereo → mono on load
+
+# Example: 2 notes (A0=21, A1=33), 3 velocity layers each, then release tails
+samples = [
+  {note=21, velocity=1,   hold_s=10.0, tail_s=0.5, is_release=false},
+  {note=21, velocity=64,  hold_s=10.0, tail_s=0.5, is_release=false},
+  {note=21, velocity=127, hold_s=10.0, tail_s=0.5, is_release=false},
+  {note=33, velocity=1,   hold_s=10.0, tail_s=0.5, is_release=false},
+  {note=33, velocity=64,  hold_s=10.0, tail_s=0.5, is_release=false},
+  {note=33, velocity=127, hold_s=10.0, tail_s=0.5, is_release=false},
+  # Release tails (recorded with shorter hold, longer tail)
+  {note=21, velocity=1,   hold_s=0.3, tail_s=3.0, is_release=true},
+  {note=21, velocity=64,  hold_s=0.3, tail_s=3.0, is_release=true},
+  {note=21, velocity=127, hold_s=0.3, tail_s=3.0, is_release=true},
+  {note=33, velocity=1,   hold_s=0.3, tail_s=3.0, is_release=true},
+  {note=33, velocity=64,  hold_s=0.3, tail_s=3.0, is_release=true},
+  {note=33, velocity=127, hold_s=0.3, tail_s=3.0, is_release=true},
+]

@@ -1,7 +1,7 @@
 """
-test_phase2.py — Unit tests for Phase 2: InputModule (WAV slicer).
+test_phase2.py — Unit tests for Phase 2: InputModule (samples.flac slicer).
 
-All tests generate synthetic WAV files in a tmp directory so no real
+All tests generate synthetic audio files in a tmp directory so no real
 instrument recordings are needed.
 
 Run with:
@@ -11,151 +11,110 @@ Run with:
 
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
+from typing import List
 
 import numpy as np
 import pytest
 import soundfile as sf
 
-from src.input_module import (
-    _compute_velocities,
-    _get_recorded_notes,
-    _to_mono,
-    _slice_wav,
-    load_instrument,
-)
+from src.data import InputSampleDef
+from src.input_module import _to_mono, _slice_samples, load_instrument
 from src.metadata_parser import MetadataError
 
 
 # ---------------------------------------------------------------------------
-# Minimal metadata string helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-MINIMAL_META = """\
-velocity_layers = {x}
-semitone_interval = {n}
-hold_time = {h}
-release_time = {r}
-start_note = {start}
-end_note = {end}
-velocity_layers_out = {x}
-"""
+SR = 22050
 
 
-def write_meta(tmp_path: Path, **kwargs) -> Path:
-    defaults = dict(x=2, n=12, h=1.0, r=0.5, start=60, end=72)
-    defaults.update(kwargs)
-    content = MINIMAL_META.format(**defaults)
-    p = tmp_path / "metadata.txt"
-    p.write_text(textwrap.dedent(content))
+def make_input_toml(tmp_path: Path, defs: List[dict], collapse_to_mono: bool = False) -> Path:
+    """Write an input.toml matching the given sample definitions."""
+    entries = []
+    for d in defs:
+        is_rel = "true" if d.get("is_release", False) else "false"
+        entries.append(
+            f'  {{note={d["note"]}, velocity={d["velocity"]}, '
+            f'hold_s={d["hold_s"]}, tail_s={d["tail_s"]}, is_release={is_rel}}}'
+        )
+    content = (
+        f"collapse_to_mono = {'true' if collapse_to_mono else 'false'}\n"
+        "samples = [\n"
+        + ",\n".join(entries) + "\n"
+        "]\n"
+    )
+    p = tmp_path / "input.toml"
+    p.write_text(content)
     return p
 
 
-def make_long_wav(
+def make_output_toml(tmp_path: Path, content: str = "") -> Path:
+    p = tmp_path / "output.toml"
+    p.write_text(content)
+    return p
+
+
+def make_samples_flac(
     tmp_path: Path,
-    filename: str,
-    notes: list[int],
-    velocities: list[int],
-    hold_time: float,
-    release_time: float,
-    sr: int = 22050,
+    defs: List[dict],
+    sr: int = SR,
     n_channels: int = 1,
-    extract_release: bool = False,
 ) -> Path:
     """
-    Build a synthetic long WAV that mimics a rendered autosample session.
-    Each note-event slot is filled with a DC tone at a unique amplitude so
-    tests can verify the correct slice was extracted.
+    Build a synthetic samples.flac matching the given definitions.
+
+    Each event (hold + tail) is filled with a DC value unique to
+    (note, velocity, is_release) so tests can verify correct slicing.
     """
-    frames_hold = int(round(hold_time * sr))
-    frames_release = int(round(release_time * sr))
-
-    total_events = len(notes) * len(velocities)
-
-    if extract_release:
-        # release.wav: each event slot is only release_time seconds (no hold portion)
-        event_duration = release_time
-        seg_len = frames_release
-    else:
-        # sustain.wav: each event slot is hold_time + release_time seconds
-        event_duration = hold_time + release_time
-        seg_len = frames_hold
-
-    frames_per_event = int(round(event_duration * sr))
-    total_frames = total_events * frames_per_event
+    # Compute total frames
+    total_s = sum(d["hold_s"] + d["tail_s"] for d in defs)
+    total_frames = int(round(total_s * sr))
 
     if n_channels == 1:
         audio = np.zeros(total_frames, dtype=np.float32)
     else:
         audio = np.zeros((total_frames, n_channels), dtype=np.float32)
 
-    event_index = 0
-    for note in notes:
-        for vel in velocities:
-            # Use a unique DC value so we can assert which slice was picked
-            dc_value = (note * 1000 + vel) / 1_000_000.0
-            event_start = int(round(event_index * event_duration * sr))
-            seg_start = event_start  # signal always starts at beginning of event slot
-            seg_end = seg_start + seg_len
-            if n_channels == 1:
-                audio[seg_start:seg_end] = dc_value
-            else:
-                audio[seg_start:seg_end, :] = dc_value
+    offset_s = 0.0
+    for d in defs:
+        event_start = int(round(offset_s * sr))
+        hold_frames = int(round(d["hold_s"] * sr))
+        tail_frames = int(round(d["tail_s"] * sr))
 
-            event_index += 1
+        # Unique DC value for the hold portion
+        hold_dc = (d["note"] * 1000 + d["velocity"]) / 1_000_000.0
+        # Unique DC value for the tail portion
+        tail_dc = (d["note"] * 1000 + d["velocity"] + 500) / 1_000_000.0
 
-    out_path = tmp_path / filename
-    sf.write(str(out_path), audio, sr)
-    return out_path
+        hold_start = event_start
+        hold_end   = hold_start + hold_frames
+        tail_start = hold_end
+        tail_end   = tail_start + tail_frames
+
+        if n_channels == 1:
+            audio[hold_start:hold_end] = hold_dc
+            audio[tail_start:tail_end] = tail_dc
+        else:
+            audio[hold_start:hold_end, :] = hold_dc
+            audio[tail_start:tail_end, :] = tail_dc
+
+        offset_s += d["hold_s"] + d["tail_s"]
+
+    out = tmp_path / "samples.flac"
+    sf.write(str(out), audio, sr)
+    return out
+
+
+def _dc(audio: np.ndarray) -> float:
+    """Mean absolute value of audio — proxy for DC level of a constant signal."""
+    return float(np.mean(np.abs(audio.astype(np.float64))))
 
 
 # ---------------------------------------------------------------------------
-# Unit tests for internal helpers
+# _to_mono
 # ---------------------------------------------------------------------------
-
-class TestComputeVelocities:
-    def test_single_layer(self):
-        assert _compute_velocities(1) == [127]
-
-    def test_two_layers(self):
-        assert _compute_velocities(2) == [1, 127]
-
-    def test_four_layers_endpoints(self):
-        v = _compute_velocities(4)
-        assert v[0] == 1
-        assert v[-1] == 127
-        assert len(v) == 4
-
-    def test_four_layers_monotonic(self):
-        v = _compute_velocities(4)
-        assert v == sorted(v)
-
-    def test_eight_layers(self):
-        v = _compute_velocities(8)
-        assert len(v) == 8
-        assert v[0] == 1
-        assert v[-1] == 127
-
-
-class TestGetRecordedNotes:
-    def test_every_semitone(self):
-        notes = _get_recorded_notes(60, 72, 1)
-        assert notes == list(range(60, 73))
-
-    def test_every_octave(self):
-        notes = _get_recorded_notes(21, 108, 12)
-        assert 21 in notes
-        assert all((n - 21) % 12 == 0 for n in notes)
-
-    def test_interval_3(self):
-        notes = _get_recorded_notes(60, 72, 3)
-        assert notes == [60, 63, 66, 69, 72]
-
-    def test_single_note(self):
-        notes = _get_recorded_notes(60, 60, 1)
-        assert notes == [60]
-
 
 class TestToMono:
     def test_already_mono_unchanged(self):
@@ -174,118 +133,187 @@ class TestToMono:
 
 
 # ---------------------------------------------------------------------------
-# _slice_wav
+# _slice_samples
 # ---------------------------------------------------------------------------
 
-class TestSliceWav:
-    SR = 22050
-
-    def _make_audio(self, notes, velocities, hold, release, extract_release=False):
-        """Build a synthetic long WAV array matching the given params."""
-        frames_hold = int(round(hold * self.SR))
-        frames_release = int(round(release * self.SR))
-        if extract_release:
-            # release.wav: events are only release_time long, signal at start
-            event_duration = release
-            seg_len = frames_release
-        else:
-            event_duration = hold + release
-            seg_len = frames_hold
-        total_frames = len(notes) * len(velocities) * int(round(event_duration * self.SR))
+class TestSliceSamples:
+    def _make_audio(self, defs, sr=SR):
+        total_s = sum(d["hold_s"] + d["tail_s"] for d in defs)
+        total_frames = int(round(total_s * sr))
         audio = np.zeros(total_frames, dtype=np.float64)
-        idx = 0
-        for note in notes:
-            for vel in velocities:
-                ev_start = int(round(idx * event_duration * self.SR))
-                dc = (note * 1000 + vel) / 1_000_000.0
-                audio[ev_start:ev_start + seg_len] = dc
-                idx += 1
+        offset_s = 0.0
+        for d in defs:
+            event_start = int(round(offset_s * sr))
+            hold_frames = int(round(d["hold_s"] * sr))
+            tail_frames = int(round(d["tail_s"] * sr))
+            hold_dc = (d["note"] * 1000 + d["velocity"]) / 1_000_000.0
+            tail_dc = (d["note"] * 1000 + d["velocity"] + 500) / 1_000_000.0
+            audio[event_start:event_start + hold_frames] = hold_dc
+            audio[event_start + hold_frames:event_start + hold_frames + tail_frames] = tail_dc
+            offset_s += d["hold_s"] + d["tail_s"]
         return audio
 
-    def test_correct_note_count(self):
-        notes = [60, 72]
-        vels = [1, 127]
-        audio = self._make_audio(notes, vels, hold=1.0, release=0.5)
-        samples = _slice_wav(audio, self.SR, notes, vels, 1.0, 0.5,
-                             extract_release=False, min_note=60, max_note=72,
-                             collapse_to_mono=False)
-        assert len(samples) == 4  # 2 notes × 2 velocities
+    def _make_defs(self, raw):
+        return [
+            InputSampleDef(
+                note=d["note"], velocity=d["velocity"],
+                hold_s=d["hold_s"], tail_s=d["tail_s"],
+                is_release=d.get("is_release", False),
+            )
+            for d in raw
+        ]
 
-    def test_min_max_note_filtering(self):
-        notes = [60, 64, 68, 72]
-        vels = [127]
-        audio = self._make_audio(notes, vels, hold=0.5, release=0.25)
-        samples = _slice_wav(audio, self.SR, notes, vels, 0.5, 0.25,
-                             extract_release=False, min_note=64, max_note=68,
-                             collapse_to_mono=False)
-        returned_notes = [s.midi_note for s in samples]
-        assert returned_notes == [64, 68]
+    def test_sustain_sample_goes_to_sustain_list(self):
+        raw = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, release = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert len(sustain) == 1
+        assert len(release) == 0
 
-    def test_sustain_slice_duration(self):
-        notes = [60]
-        vels = [127]
-        hold = 2.0
-        audio = self._make_audio(notes, vels, hold=hold, release=0.5)
-        samples = _slice_wav(audio, self.SR, notes, vels, hold, 0.5,
-                             extract_release=False, min_note=60, max_note=60,
-                             collapse_to_mono=False)
-        expected_frames = int(round(hold * self.SR))
-        assert samples[0].audio.shape[0] == expected_frames
+    def test_release_sample_goes_to_release_list(self):
+        raw = [{"note": 60, "velocity": 64, "hold_s": 0.3, "tail_s": 1.5, "is_release": True}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, release = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert len(sustain) == 0
+        assert len(release) == 1
 
-    def test_release_slice_duration(self):
-        notes = [60]
-        vels = [127]
-        release = 1.5
-        audio = self._make_audio(notes, vels, hold=2.0, release=release,
-                                 extract_release=True)
-        samples = _slice_wav(audio, self.SR, notes, vels, 2.0, release,
-                             extract_release=True, min_note=60, max_note=60,
-                             collapse_to_mono=False)
-        expected_frames = int(round(release * self.SR))
-        assert samples[0].audio.shape[0] == expected_frames
+    def test_sustain_duration(self):
+        hold_s = 2.0
+        raw = [{"note": 60, "velocity": 64, "hold_s": hold_s, "tail_s": 0.5, "is_release": False}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, False)
+        expected = int(round(hold_s * SR))
+        assert sustain[0].audio.shape[0] == expected
 
-    def test_correct_note_and_velocity_assigned(self):
-        notes = [60, 72]
-        vels = _compute_velocities(2)
-        audio = self._make_audio(notes, vels, hold=1.0, release=0.5)
-        samples = _slice_wav(audio, self.SR, notes, vels, 1.0, 0.5,
-                             extract_release=False, min_note=60, max_note=72,
-                             collapse_to_mono=False)
-        note_vel_pairs = [(s.midi_note, s.velocity) for s in samples]
-        expected = [(n, v) for n in notes for v in vels]
-        assert note_vel_pairs == expected
+    def test_release_duration(self):
+        tail_s = 1.8
+        raw = [{"note": 60, "velocity": 64, "hold_s": 0.5, "tail_s": tail_s, "is_release": True}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        _, release = _slice_samples(audio, SR, defs, 0, 127, False)
+        expected = int(round(tail_s * SR))
+        assert release[0].audio.shape[0] == expected
+
+    def test_sustain_extracts_hold_portion(self):
+        """Sustain slice should contain hold_dc, not tail_dc."""
+        raw = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        hold_dc = (60 * 1000 + 64) / 1_000_000.0
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert abs(_dc(sustain[0].audio) - hold_dc) < 1e-5
+
+    def test_release_extracts_tail_portion(self):
+        """Release slice should contain tail_dc, not hold_dc."""
+        raw = [{"note": 60, "velocity": 64, "hold_s": 0.5, "tail_s": 1.0, "is_release": True}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        tail_dc = (60 * 1000 + 64 + 500) / 1_000_000.0
+        _, release = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert abs(_dc(release[0].audio) - tail_dc) < 1e-5
+
+    def test_multiple_events_sequential_offsets(self):
+        """Second event must start immediately after first (hold+tail)."""
+        raw = [
+            {"note": 60, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert len(sustain) == 2
+        assert sustain[0].velocity == 1
+        assert sustain[1].velocity == 127
+
+    def test_note_range_filter(self):
+        raw = [
+            {"note": 58, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 62, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 60, 60, False)
+        assert len(sustain) == 1
+        assert sustain[0].midi_note == 60
+
+    def test_filtered_event_still_advances_offset(self):
+        """Events outside note range are skipped but time offsets must still be correct."""
+        raw = [
+            {"note": 50, "velocity": 64, "hold_s": 2.0, "tail_s": 1.0, "is_release": False},  # filtered
+            {"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},  # kept
+        ]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        hold_dc = (60 * 1000 + 64) / 1_000_000.0
+        sustain, _ = _slice_samples(audio, SR, defs, 60, 60, False)
+        assert len(sustain) == 1
+        assert abs(_dc(sustain[0].audio) - hold_dc) < 1e-5
+
+    def test_mixed_sustain_and_release(self):
+        raw = [
+            {"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 64, "hold_s": 0.3, "tail_s": 2.0, "is_release": True},
+            {"note": 72, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, release = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert len(sustain) == 2
+        assert len(release) == 1
+
+    def test_non_uniform_velocities_per_note(self):
+        """Different notes can have different numbers of velocity layers."""
+        raw = [
+            {"note": 60, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 64,  "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 72, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 72, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert len(sustain) == 5
+        n60 = [s for s in sustain if s.midi_note == 60]
+        n72 = [s for s in sustain if s.midi_note == 72]
+        assert len(n60) == 3
+        assert len(n72) == 2
 
     def test_collapse_to_mono(self):
-        notes = [60]
-        vels = [127]
-        hold = 0.5
-        n_frames = int(round((hold + 0.25) * self.SR))
-        audio_stereo = np.ones((n_frames, 2), dtype=np.float64) * 0.5
-        samples = _slice_wav(audio_stereo, self.SR, notes, vels, hold, 0.25,
-                             extract_release=False, min_note=60, max_note=60,
-                             collapse_to_mono=True)
-        assert samples[0].audio.ndim == 1
+        n_frames = int(round(1.5 * SR))
+        audio = np.ones((n_frames, 2), dtype=np.float64) * 0.5
+        raw = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, collapse_to_mono=True)
+        assert sustain[0].audio.ndim == 1
 
-    def test_stereo_preserved_when_not_collapsing(self):
-        notes = [60]
-        vels = [127]
-        hold = 0.5
-        n_frames = int(round((hold + 0.25) * self.SR))
-        audio_stereo = np.ones((n_frames, 2), dtype=np.float64) * 0.5
-        samples = _slice_wav(audio_stereo, self.SR, notes, vels, hold, 0.25,
-                             extract_release=False, min_note=60, max_note=60,
-                             collapse_to_mono=False)
-        assert samples[0].audio.ndim == 2
-        assert samples[0].audio.shape[1] == 2
+    def test_stereo_preserved(self):
+        n_frames = int(round(1.5 * SR))
+        audio = np.ones((n_frames, 2), dtype=np.float64) * 0.5
+        raw = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, collapse_to_mono=False)
+        assert sustain[0].audio.ndim == 2
+        assert sustain[0].audio.shape[1] == 2
 
     def test_sr_stored_on_sample(self):
-        notes = [60]
-        vels = [127]
-        audio = self._make_audio(notes, vels, hold=0.5, release=0.25)
-        samples = _slice_wav(audio, self.SR, notes, vels, 0.5, 0.25,
-                             extract_release=False, min_note=60, max_note=60,
-                             collapse_to_mono=False)
-        assert samples[0].sr == self.SR
+        raw = [{"note": 60, "velocity": 64, "hold_s": 0.5, "tail_s": 0.25, "is_release": False}]
+        audio = self._make_audio(raw)
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert sustain[0].sr == SR
+
+    def test_bounds_clamped_gracefully(self):
+        """If audio is shorter than expected, pad with zeros rather than crash."""
+        raw = [{"note": 60, "velocity": 64, "hold_s": 5.0, "tail_s": 0.5, "is_release": False}]
+        audio = np.zeros(100, dtype=np.float64)  # way too short
+        defs = self._make_defs(raw)
+        sustain, _ = _slice_samples(audio, SR, defs, 0, 127, False)
+        assert len(sustain) == 1  # did not crash
 
 
 # ---------------------------------------------------------------------------
@@ -293,168 +321,144 @@ class TestSliceWav:
 # ---------------------------------------------------------------------------
 
 class TestLoadInstrument:
-    SR = 22050
-
-    def _setup_instrument(
-        self, tmp_path: Path,
-        x: int = 2, n: int = 12,
-        h: float = 1.0, r: float = 0.5,
-        start: int = 60, end: int = 72,
-        with_release: bool = False,
-        extra_meta: str = "",
+    def _setup(
+        self,
+        tmp_path: Path,
+        defs: List[dict],
+        output_content: str = "",
         n_channels: int = 1,
     ):
-        notes = _get_recorded_notes(start, end, n)
-        velocities = _compute_velocities(x)
-        write_meta(tmp_path, x=x, n=n, h=h, r=r, start=start, end=end)
-        (tmp_path / "metadata.txt").open("a").write(extra_meta)
-        make_long_wav(tmp_path, "sustain.wav", notes, velocities, h, r,
-                      sr=self.SR, n_channels=n_channels)
-        if with_release:
-            make_long_wav(tmp_path, "release.wav", notes, velocities, h, r,
-                          sr=self.SR, n_channels=n_channels, extract_release=True)
-        return notes, velocities
+        make_input_toml(tmp_path, defs)
+        make_output_toml(tmp_path, output_content)
+        make_samples_flac(tmp_path, defs, sr=SR, n_channels=n_channels)
 
     def test_returns_instrument_data(self, tmp_path):
         from src.data import InstrumentData
-        self._setup_instrument(tmp_path)
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        self._setup(tmp_path, defs)
         data = load_instrument(tmp_path)
         assert isinstance(data, InstrumentData)
 
-    def test_meta_parsed(self, tmp_path):
-        self._setup_instrument(tmp_path, x=2, n=12, h=1.0, r=0.5)
+    def test_instrument_name_from_folder(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        self._setup(tmp_path, defs)
         data = load_instrument(tmp_path)
-        assert data.meta.velocity_layers == 2
-        assert data.meta.semitone_interval == 12
-        assert data.meta.hold_time == 1.0
+        assert data.meta.instrument_name == tmp_path.name
 
     def test_sustain_sample_count(self, tmp_path):
-        notes, velocities = self._setup_instrument(tmp_path, x=2, n=12,
-                                                   start=60, end=72)
+        defs = [
+            {"note": 60, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 72, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 72, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        self._setup(tmp_path, defs)
         data = load_instrument(tmp_path)
-        assert len(data.sustain) == len(notes) * len(velocities)
+        assert len(data.sustain) == 4
 
-    def test_no_release_wav_gives_empty_list(self, tmp_path):
-        self._setup_instrument(tmp_path, with_release=False)
+    def test_release_samples_separated(self, tmp_path):
+        defs = [
+            {"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 64, "hold_s": 0.3, "tail_s": 2.0, "is_release": True},
+        ]
+        self._setup(tmp_path, defs)
+        data = load_instrument(tmp_path)
+        assert len(data.sustain) == 1
+        assert len(data.release) == 1
+
+    def test_no_release_gives_empty_list(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        self._setup(tmp_path, defs)
         data = load_instrument(tmp_path)
         assert data.release == []
 
-    def test_release_wav_loaded(self, tmp_path):
-        notes, velocities = self._setup_instrument(tmp_path, x=2, n=12,
-                                                   with_release=True)
+    def test_sustain_duration(self, tmp_path):
+        hold_s = 1.5
+        defs = [{"note": 60, "velocity": 64, "hold_s": hold_s, "tail_s": 0.5, "is_release": False}]
+        self._setup(tmp_path, defs)
         data = load_instrument(tmp_path)
-        assert len(data.release) == len(notes) * len(velocities)
+        expected = int(round(hold_s * SR))
+        assert data.sustain[0].audio.shape[0] == expected
 
-    def test_sample_duration_matches_hold_time(self, tmp_path):
-        h = 1.5
-        self._setup_instrument(tmp_path, h=h, r=0.5)
+    def test_release_duration(self, tmp_path):
+        tail_s = 2.0
+        defs = [{"note": 60, "velocity": 64, "hold_s": 0.3, "tail_s": tail_s, "is_release": True}]
+        self._setup(tmp_path, defs)
         data = load_instrument(tmp_path)
-        expected = int(round(h * self.SR))
-        for s in data.sustain:
-            assert s.audio.shape[0] == expected
+        expected = int(round(tail_s * SR))
+        assert data.release[0].audio.shape[0] == expected
 
-    def test_release_sample_duration_matches_release_time(self, tmp_path):
-        r = 1.2
-        self._setup_instrument(tmp_path, h=1.0, r=r, with_release=True)
-        data = load_instrument(tmp_path)
-        expected = int(round(r * self.SR))
-        for s in data.release:
-            assert s.audio.shape[0] == expected
-
-    def test_note_range_correct(self, tmp_path):
-        self._setup_instrument(tmp_path, n=12, start=60, end=72)
-        data = load_instrument(tmp_path)
-        notes = data.sustain_notes()
-        assert min(notes) == 60
-        assert max(notes) == 72
-
-    def test_velocity_values_correct(self, tmp_path):
-        self._setup_instrument(tmp_path, x=2)
-        data = load_instrument(tmp_path)
-        assert data.sustain_velocities() == [1, 127]
-
-    def test_min_max_note_filtering(self, tmp_path):
-        notes, velocities = self._setup_instrument(
-            tmp_path, n=1, start=60, end=65,
-            extra_meta="\nmin_note = 62\nmax_note = 64\n"
-        )
-        data = load_instrument(tmp_path)
-        returned_notes = data.sustain_notes()
-        assert all(62 <= n <= 64 for n in returned_notes)
-        assert 60 not in returned_notes
-        assert 65 not in returned_notes
-
-    def test_collapse_to_mono(self, tmp_path):
-        self._setup_instrument(tmp_path, n_channels=2,
-                               extra_meta="\ncollapse_to_mono = true\n")
-        data = load_instrument(tmp_path)
-        for s in data.sustain:
-            assert s.audio.ndim == 1, "Expected mono after collapse"
-
-    def test_stereo_preserved_without_collapse(self, tmp_path):
-        self._setup_instrument(tmp_path, n_channels=2)
-        data = load_instrument(tmp_path)
-        for s in data.sustain:
-            assert s.audio.ndim == 2
-            assert s.audio.shape[1] == 2
-
-    def test_missing_sustain_wav_raises(self, tmp_path):
-        write_meta(tmp_path)
-        with pytest.raises(FileNotFoundError, match="sustain.wav"):
-            load_instrument(tmp_path)
-
-    def test_missing_metadata_raises(self, tmp_path):
-        notes = _get_recorded_notes(60, 72, 12)
-        vels = _compute_velocities(2)
-        make_long_wav(tmp_path, "sustain.wav", notes, vels, 1.0, 0.5, sr=self.SR)
-        with pytest.raises(FileNotFoundError):
-            load_instrument(tmp_path)
-
-    def test_invalid_metadata_raises(self, tmp_path):
-        notes = _get_recorded_notes(60, 72, 12)
-        vels = _compute_velocities(2)
-        make_long_wav(tmp_path, "sustain.wav", notes, vels, 1.0, 0.5, sr=self.SR)
-        p = tmp_path / "metadata.txt"
-        p.write_text("velocity_layers = 2\n")  # missing required fields
-        with pytest.raises(MetadataError):
-            load_instrument(tmp_path)
-
-    def test_release_uses_override_timing(self, tmp_path):
-        """release.wav sliced with release_hold_time / release_release_time when set."""
-        x, n = 2, 12
-        h_sustain, r_sustain = 1.0, 0.5
-        h_release, r_release = 2.0, 1.5
-        start, end = 60, 72
-        notes = _get_recorded_notes(start, end, n)
-        velocities = _compute_velocities(x)
-
-        write_meta(tmp_path, x=x, n=n, h=h_sustain, r=r_sustain, start=start, end=end)
-        meta_path = tmp_path / "metadata.txt"
-        with meta_path.open("a") as f:
-            f.write(f"\nrelease_hold_time = {h_release}\nrelease_release_time = {r_release}\n")
-
-        make_long_wav(tmp_path, "sustain.wav", notes, velocities, h_sustain, r_sustain,
-                      sr=self.SR)
-        make_long_wav(tmp_path, "release.wav", notes, velocities, h_release, r_release,
-                      sr=self.SR, extract_release=True)
-
-        data = load_instrument(tmp_path)
-        expected_release_frames = int(round(r_release * self.SR))
-        for s in data.release:
-            assert s.audio.shape[0] == expected_release_frames
-
-    def test_four_velocity_layers(self, tmp_path):
-        self._setup_instrument(tmp_path, x=4, n=12)
-        data = load_instrument(tmp_path)
-        assert data.sustain_velocities() == _compute_velocities(4)
-
-    def test_single_velocity_layer(self, tmp_path):
-        self._setup_instrument(tmp_path, x=1, n=12)
-        data = load_instrument(tmp_path)
-        assert data.sustain_velocities() == [127]
-
-    def test_single_note(self, tmp_path):
-        self._setup_instrument(tmp_path, x=2, n=12, start=60, end=60)
+    def test_note_range_filter_from_output_toml(self, tmp_path):
+        defs = [
+            {"note": 58, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 62, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        self._setup(tmp_path, defs, output_content="min_note=60\nmax_note=60\n")
         data = load_instrument(tmp_path)
         assert data.sustain_notes() == [60]
-        assert len(data.sustain) == 2  # 1 note × 2 velocities
+
+    def test_non_uniform_velocities_preserved(self, tmp_path):
+        defs = [
+            {"note": 60, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 40,  "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 80,  "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 72, "velocity": 1,   "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+            {"note": 72, "velocity": 127, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+        ]
+        self._setup(tmp_path, defs)
+        data = load_instrument(tmp_path)
+        n60_vels = sorted(s.velocity for s in data.sustain if s.midi_note == 60)
+        n72_vels = sorted(s.velocity for s in data.sustain if s.midi_note == 72)
+        assert n60_vels == [1, 40, 80, 127]
+        assert n72_vels == [1, 127]
+
+    def test_different_hold_tail_per_sample(self, tmp_path):
+        """Each sample can have different hold_s and tail_s."""
+        defs = [
+            {"note": 60, "velocity": 64,  "hold_s": 2.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 5.0, "tail_s": 1.0, "is_release": False},
+        ]
+        self._setup(tmp_path, defs)
+        data = load_instrument(tmp_path)
+        assert len(data.sustain) == 2
+        s64  = next(s for s in data.sustain if s.velocity == 64)
+        s127 = next(s for s in data.sustain if s.velocity == 127)
+        assert s64.audio.shape[0]  == int(round(2.0 * SR))
+        assert s127.audio.shape[0] == int(round(5.0 * SR))
+
+    def test_collapse_to_mono(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        make_input_toml(tmp_path, defs, collapse_to_mono=True)
+        make_output_toml(tmp_path)
+        make_samples_flac(tmp_path, defs, sr=SR, n_channels=2)
+        data = load_instrument(tmp_path)
+        assert data.sustain[0].audio.ndim == 1
+
+    def test_stereo_preserved_without_collapse(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        self._setup(tmp_path, defs, n_channels=2)
+        data = load_instrument(tmp_path)
+        assert data.sustain[0].audio.ndim == 2
+
+    def test_missing_samples_flac_raises(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        make_input_toml(tmp_path, defs)
+        make_output_toml(tmp_path)
+        with pytest.raises(FileNotFoundError, match="samples"):
+            load_instrument(tmp_path)
+
+    def test_missing_input_toml_raises(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        make_output_toml(tmp_path)
+        make_samples_flac(tmp_path, defs)
+        with pytest.raises(FileNotFoundError, match="input.toml"):
+            load_instrument(tmp_path)
+
+    def test_missing_output_toml_raises(self, tmp_path):
+        defs = [{"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False}]
+        make_input_toml(tmp_path, defs)
+        make_samples_flac(tmp_path, defs)
+        with pytest.raises(FileNotFoundError, match="output.toml"):
+            load_instrument(tmp_path)

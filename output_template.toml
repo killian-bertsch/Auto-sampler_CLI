@@ -1,0 +1,44 @@
+# Auto-Sampler CLI — Output / Processing Configuration
+# Copy to your instrument folder as "output.toml" and fill in your values.
+# All fields are optional — defaults are shown.
+
+# ─── OUTPUT SELECTION ────────────────────────────────────────────────────────
+# Filter the recorded note range and thin by percentage.
+
+min_note        = 21     # lowest MIDI note to include in output
+max_note        = 108    # highest MIDI note to include in output
+note_percentage = 100    # % of notes in range to keep (50 = evenly-spaced half)
+
+# ─── CROSSFADE ───────────────────────────────────────────────────────────────
+
+crossfade_percent = 0    # % of velocity zone width that overlaps adjacent layers
+                          # 0 = hard boundaries, 50 = half of each zone overlaps
+
+# ─── NORMALIZATION ───────────────────────────────────────────────────────────
+
+normalize       = true
+normalize_mode  = "velocity"   # "lufs" | "rms" | "velocity"
+                           #   lufs     — group-LUFS per velocity layer → target_lufs
+                           #   rms      — same using RMS energy (better for short samples)
+                           #   velocity — linear gain curve per note; dynamics baked into audio
+
+normalize_target_lufs        = -18.0   # target LUFS (or dB RMS for rms mode)
+peak_ceiling_db              = -1.0    # hard peak ceiling after normalization (dBFS)
+velocity_dynamic_range_db    = 40.0    # amp_velcurve_1 range (lufs/rms modes only)
+
+# ─── PLAYBACK / SFZ ──────────────────────────────────────────────────────────
+
+ampeg_release      = 0.08    # sampler release time in seconds
+loop_crossfade_ms  = 20.0    # loop crossfade length in milliseconds
+
+# ─── TRANSIENT SHAPER ────────────────────────────────────────────────────────
+# SPL-style dual-envelope shaper applied per sample before normalization.
+
+enable_transient_shaper = false
+transient_attack_db     = 0.0    # gain on attack portion  (-12 … +12 dB)
+transient_sustain_db    = 4.5    # gain on body/sustain    (-12 … +12 dB)
+transient_speed_ms      = 7.0    # fast envelope time constant (1 … 50 ms)
+
+# ─── ADVANCED ────────────────────────────────────────────────────────────────
+
+pre_trim_ms = 0.0    # milliseconds to cut from the front of every sample

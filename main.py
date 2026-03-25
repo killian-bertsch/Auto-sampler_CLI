@@ -6,9 +6,9 @@ Usage:
     python main.py <target_dir> [--output-dir DIR] [--instrument NAME]
 
 target_dir should contain one or more instrument subfolders, each with:
-    metadata.txt / metadata.toml
-    sustain.wav or sustain.flac
-    release.wav or release.flac  (optional)
+    input.toml    — ordered sample manifest
+    output.toml   — processing / SFZ configuration
+    samples.flac  — all recorded samples in sequence
 """
 
 import argparse
@@ -18,14 +18,15 @@ from pathlib import Path
 
 
 def find_instruments(target_dir: Path) -> list[Path]:
-    """Return subdirectories of target_dir that contain metadata.toml (or legacy metadata.txt) + sustain.wav/.flac."""
+    """Return subdirectories of target_dir that contain input.toml + output.toml + samples.flac/.wav."""
     instruments = []
     for subdir in sorted(target_dir.iterdir()):
         if not subdir.is_dir():
             continue
-        has_meta = (subdir / "metadata.toml").exists() or (subdir / "metadata.txt").exists()
-        has_sustain = (subdir / "sustain.wav").exists() or (subdir / "sustain.flac").exists()
-        if has_meta and has_sustain:
+        has_input  = (subdir / "input.toml").exists()
+        has_output = (subdir / "output.toml").exists()
+        has_audio  = (subdir / "samples.flac").exists() or (subdir / "samples.wav").exists()
+        if has_input and has_output and has_audio:
             instruments.append(subdir)
     return instruments
 
@@ -132,7 +133,7 @@ def main() -> int:
 
     if not instrument_dirs:
         print(f"No valid instrument folders found in: {target_dir}")
-        print("Each instrument folder must contain metadata.toml (or metadata.txt) and sustain.wav or sustain.flac")
+        print("Each instrument folder must contain input.toml, output.toml, and samples.flac")
         return 1
 
     print(f"Found {len(instrument_dirs)} instrument(s) to process.")

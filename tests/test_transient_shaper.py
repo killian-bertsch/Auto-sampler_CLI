@@ -18,16 +18,9 @@ SR = 44100
 
 def _make_meta(**overrides) -> InstrumentMeta:
     defaults = dict(
-        velocity_layers=1,
-        semitone_interval=12,
-        hold_time=1.0,
-        release_time=0.5,
-        start_note=60,
-        end_note=60,
         min_note=60,
         max_note=60,
         note_percentage=100.0,
-        velocity_layers_out=1,
         crossfade_percent=0.0,
         normalize=False,
         normalize_mode="lufs",
@@ -227,17 +220,10 @@ class TestTransientShaperProcessor:
 class TestTransientShaperMetadataParsing:
 
     def _write_and_parse(self, tmp_path, extra_lines=""):
-        from src.metadata_parser import parse_metadata
-        content = (
-            "velocity_layers = 1\n"
-            "semitone_interval = 12\n"
-            "hold_time = 1.0\n"
-            "release_time = 0.5\n"
-            "velocity_layers_out = 1\n"
-        ) + extra_lines
-        p = tmp_path / "metadata.txt"
-        p.write_text(content)
-        return parse_metadata(p)
+        from src.metadata_parser import parse_output_meta
+        p = tmp_path / "output.toml"
+        p.write_text(extra_lines)
+        return parse_output_meta(p)
 
     def test_defaults_when_absent(self, tmp_path):
         meta = self._write_and_parse(tmp_path)
@@ -263,37 +249,25 @@ class TestTransientShaperMetadataParsing:
         assert meta.transient_speed_ms == 5.0
 
     def test_attack_db_out_of_range(self, tmp_path):
-        from src.metadata_parser import parse_metadata, MetadataError
-        extra = "transient_attack_db = 15.0\n"
-        p = tmp_path / "metadata.txt"
-        p.write_text(
-            "velocity_layers = 1\nsemitone_interval = 12\nhold_time = 1.0\n"
-            "release_time = 0.5\nvelocity_layers_out = 1\n" + extra
-        )
+        from src.metadata_parser import parse_output_meta, MetadataError
+        p = tmp_path / "output.toml"
+        p.write_text("transient_attack_db = 15.0\n")
         with pytest.raises(MetadataError, match="transient_attack_db"):
-            parse_metadata(p)
+            parse_output_meta(p)
 
     def test_sustain_db_out_of_range(self, tmp_path):
-        from src.metadata_parser import parse_metadata, MetadataError
-        extra = "transient_sustain_db = -20.0\n"
-        p = tmp_path / "metadata.txt"
-        p.write_text(
-            "velocity_layers = 1\nsemitone_interval = 12\nhold_time = 1.0\n"
-            "release_time = 0.5\nvelocity_layers_out = 1\n" + extra
-        )
+        from src.metadata_parser import parse_output_meta, MetadataError
+        p = tmp_path / "output.toml"
+        p.write_text("transient_sustain_db = -20.0\n")
         with pytest.raises(MetadataError, match="transient_sustain_db"):
-            parse_metadata(p)
+            parse_output_meta(p)
 
     def test_speed_ms_out_of_range(self, tmp_path):
-        from src.metadata_parser import parse_metadata, MetadataError
-        extra = "transient_speed_ms = 100.0\n"
-        p = tmp_path / "metadata.txt"
-        p.write_text(
-            "velocity_layers = 1\nsemitone_interval = 12\nhold_time = 1.0\n"
-            "release_time = 0.5\nvelocity_layers_out = 1\n" + extra
-        )
+        from src.metadata_parser import parse_output_meta, MetadataError
+        p = tmp_path / "output.toml"
+        p.write_text("transient_speed_ms = 100.0\n")
         with pytest.raises(MetadataError, match="transient_speed_ms"):
-            parse_metadata(p)
+            parse_output_meta(p)
 
     def test_speed_ms_boundary_valid(self, tmp_path):
         meta = self._write_and_parse(tmp_path, "transient_speed_ms = 1.0\n")

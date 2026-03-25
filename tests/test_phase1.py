@@ -1,5 +1,6 @@
 """
-test_phase1.py — Unit tests for Phase 1: scaffolding, data structures, metadata parser, pipeline.
+test_phase1.py — Unit tests for Phase 1: scaffolding, data structures,
+                 metadata parsers, and pipeline.
 
 Run with:
     cd Auto-sampler_CLI
@@ -12,10 +13,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.data import InstrumentData, InstrumentMeta, Sample
+from src.data import InstrumentData, InstrumentMeta, InputSampleDef, Sample
 from src.base import ProcessingObject, PassthroughProcessor
 from src.pipeline import Pipeline
-from src.metadata_parser import MetadataError, parse_metadata
+from src.metadata_parser import MetadataError, parse_input_meta, parse_output_meta
 
 
 # ---------------------------------------------------------------------------
@@ -23,18 +24,11 @@ from src.metadata_parser import MetadataError, parse_metadata
 # ---------------------------------------------------------------------------
 
 def make_meta(**overrides) -> InstrumentMeta:
-    """Return a minimal valid InstrumentMeta, with optional field overrides."""
+    """Return a minimal valid InstrumentMeta with optional field overrides."""
     defaults = dict(
-        velocity_layers=4,
-        semitone_interval=3,
-        hold_time=4.0,
-        release_time=2.0,
-        start_note=21,
-        end_note=108,
         min_note=21,
         max_note=108,
         note_percentage=100.0,
-        velocity_layers_out=4,
         crossfade_percent=20.0,
         normalize=True,
         normalize_mode="lufs",
@@ -61,11 +55,54 @@ def make_instrument_data(n_notes=3, n_velocities=2) -> InstrumentData:
     return InstrumentData(sustain=sustain, release=[], meta=make_meta())
 
 
-def write_metadata(tmp_path: Path, content: str) -> Path:
-    """Write a metadata.txt to a temp dir and return its path."""
-    p = tmp_path / "metadata.txt"
-    p.write_text(textwrap.dedent(content))
+def write_input_toml(tmp_path: Path, defs, collapse_to_mono=False) -> Path:
+    """Write an input.toml to tmp_path using TOML inline-table array format."""
+    entries = []
+    for d in defs:
+        is_rel = "true" if d.get("is_release", False) else "false"
+        entries.append(
+            f'  {{note={d["note"]}, velocity={d["velocity"]}, '
+            f'hold_s={d["hold_s"]}, tail_s={d["tail_s"]}, is_release={is_rel}}}'
+        )
+    content = (
+        f"collapse_to_mono = {'true' if collapse_to_mono else 'false'}\n"
+        "samples = [\n"
+        + ",\n".join(entries) + "\n"
+        "]\n"
+    )
+    p = tmp_path / "input.toml"
+    p.write_text(content)
     return p
+
+
+def write_output_toml(tmp_path: Path, content: str = "") -> Path:
+    """Write an output.toml to tmp_path."""
+    p = tmp_path / "output.toml"
+    p.write_text(content)
+    return p
+
+
+MINIMAL_INPUT_DEFS = [
+    {"note": 60, "velocity": 64, "hold_s": 1.0, "tail_s": 0.5, "is_release": False},
+]
+
+
+# ---------------------------------------------------------------------------
+# InputSampleDef dataclass
+# ---------------------------------------------------------------------------
+
+class TestInputSampleDef:
+    def test_fields(self):
+        d = InputSampleDef(note=60, velocity=64, hold_s=5.0, tail_s=1.0, is_release=False)
+        assert d.note == 60
+        assert d.velocity == 64
+        assert d.hold_s == 5.0
+        assert d.tail_s == 1.0
+        assert d.is_release is False
+
+    def test_release_flag(self):
+        d = InputSampleDef(note=60, velocity=127, hold_s=0.5, tail_s=2.0, is_release=True)
+        assert d.is_release is True
 
 
 # ---------------------------------------------------------------------------
@@ -102,32 +139,27 @@ class TestInstrumentMeta:
     def test_required_fields_present(self):
         meta = make_meta()
         assert meta.instrument_name == "TestInstrument"
-        assert meta.velocity_layers == 4
-
-    def test_release_overrides_default_to_none(self):
-        meta = make_meta()
-        assert meta.release_hold_time is None
-        assert meta.release_release_time is None
-
-    def test_effective_release_hold_time_falls_back(self):
-        meta = make_meta(hold_time=4.0, release_hold_time=None)
-        assert meta.effective_release_hold_time() == 4.0
-
-    def test_effective_release_hold_time_uses_override(self):
-        meta = make_meta(hold_time=4.0, release_hold_time=6.0)
-        assert meta.effective_release_hold_time() == 6.0
-
-    def test_effective_release_release_time_falls_back(self):
-        meta = make_meta(release_time=2.0, release_release_time=None)
-        assert meta.effective_release_release_time() == 2.0
-
-    def test_effective_release_release_time_uses_override(self):
-        meta = make_meta(release_time=2.0, release_release_time=3.5)
-        assert meta.effective_release_release_time() == 3.5
+        assert meta.min_note == 21
+        assert meta.max_note == 108
 
     def test_computed_dynamic_range_default_none(self):
         meta = make_meta()
         assert meta.computed_dynamic_range_db is None
+
+    def test_no_recording_fields(self):
+        """Recording fields were removed — verify they don't exist on InstrumentMeta."""
+        meta = make_meta()
+        assert not hasattr(meta, "velocity_layers")
+        assert not hasattr(meta, "semitone_interval")
+        assert not hasattr(meta, "hold_time")
+        assert not hasattr(meta, "release_time")
+        assert not hasattr(meta, "start_note")
+        assert not hasattr(meta, "end_note")
+        assert not hasattr(meta, "velocity_layers_out")
+
+    def test_no_velocity_map(self):
+        meta = make_meta()
+        assert not hasattr(meta, "velocity_map")
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +188,7 @@ class TestInstrumentData:
 
     def test_all_samples_combines(self):
         data = make_instrument_data(n_notes=2, n_velocities=2)
-        release = [make_sample(60, 64)]
-        data.release = release
+        data.release = [make_sample(60, 64)]
         assert len(data.all_samples()) == 5  # 2*2 sustain + 1 release
 
     def test_empty_release(self):
@@ -214,7 +245,6 @@ class TestPipeline:
         assert result is data
 
     def test_chain_order(self):
-        """Processors must run in the order they are listed."""
         log = []
 
         class LogProcessor(ProcessingObject):
@@ -247,168 +277,155 @@ class TestPipeline:
 
 
 # ---------------------------------------------------------------------------
-# Metadata Parser
+# parse_input_meta
 # ---------------------------------------------------------------------------
 
-VALID_METADATA = """\
-    velocity_layers = 4
-    semitone_interval = 3
-    hold_time = 4.0
-    release_time = 2.0
-    velocity_layers_out = 4
-"""
+class TestParseInputMeta:
+    def test_parse_minimal(self, tmp_path):
+        write_input_toml(tmp_path, MINIMAL_INPUT_DEFS)
+        defs, collapse = parse_input_meta(tmp_path)
+        assert len(defs) == 1
+        assert defs[0].note == 60
+        assert defs[0].velocity == 64
+        assert defs[0].hold_s == 1.0
+        assert defs[0].tail_s == 0.5
+        assert defs[0].is_release is False
+        assert collapse is False
+
+    def test_collapse_to_mono_true(self, tmp_path):
+        write_input_toml(tmp_path, MINIMAL_INPUT_DEFS, collapse_to_mono=True)
+        _, collapse = parse_input_meta(tmp_path)
+        assert collapse is True
+
+    def test_multiple_samples_in_order(self, tmp_path):
+        defs = [
+            {"note": 60, "velocity": 1,   "hold_s": 5.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 5.0, "tail_s": 0.5, "is_release": False},
+            {"note": 60, "velocity": 1,   "hold_s": 0.3, "tail_s": 2.0, "is_release": True},
+        ]
+        write_input_toml(tmp_path, defs)
+        result, _ = parse_input_meta(tmp_path)
+        assert len(result) == 3
+        assert result[0].velocity == 1
+        assert result[1].velocity == 127
+        assert result[2].is_release is True
+
+    def test_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            parse_input_meta(tmp_path / "nonexistent.toml")
+
+    def test_dir_resolves_to_input_toml(self, tmp_path):
+        write_input_toml(tmp_path, MINIMAL_INPUT_DEFS)
+        defs, _ = parse_input_meta(tmp_path)
+        assert len(defs) == 1
+
+    def test_missing_note_field(self, tmp_path):
+        p = tmp_path / "input.toml"
+        p.write_text("[[samples]]\nvelocity=64\nhold_s=1.0\ntail_s=0.5\nis_release=false\n")
+        with pytest.raises(MetadataError, match="note"):
+            parse_input_meta(p)
+
+    def test_note_out_of_range(self, tmp_path):
+        p = tmp_path / "input.toml"
+        p.write_text("[[samples]]\nnote=200\nvelocity=64\nhold_s=1.0\ntail_s=0.5\nis_release=false\n")
+        with pytest.raises(MetadataError, match="note"):
+            parse_input_meta(p)
+
+    def test_velocity_out_of_range(self, tmp_path):
+        p = tmp_path / "input.toml"
+        p.write_text("[[samples]]\nnote=60\nvelocity=0\nhold_s=1.0\ntail_s=0.5\nis_release=false\n")
+        with pytest.raises(MetadataError, match="velocity"):
+            parse_input_meta(p)
+
+    def test_hold_s_zero_rejected(self, tmp_path):
+        p = tmp_path / "input.toml"
+        p.write_text("[[samples]]\nnote=60\nvelocity=64\nhold_s=0.0\ntail_s=0.5\nis_release=false\n")
+        with pytest.raises(MetadataError, match="hold_s"):
+            parse_input_meta(p)
+
+    def test_empty_samples_rejected(self, tmp_path):
+        p = tmp_path / "input.toml"
+        p.write_text("collapse_to_mono = false\n")
+        with pytest.raises(MetadataError, match="samples"):
+            parse_input_meta(p)
 
 
-class TestMetadataParser:
-    def test_parse_valid_minimal(self, tmp_path):
-        p = write_metadata(tmp_path, VALID_METADATA)
-        meta = parse_metadata(p)
-        assert meta.velocity_layers == 4
-        assert meta.semitone_interval == 3
-        assert meta.hold_time == 4.0
-        assert meta.release_time == 2.0
-        assert meta.instrument_name == ""  # set by load_instrument from folder name
+# ---------------------------------------------------------------------------
+# parse_output_meta
+# ---------------------------------------------------------------------------
 
-    def test_defaults_applied(self, tmp_path):
-        p = write_metadata(tmp_path, VALID_METADATA)
-        meta = parse_metadata(p)
-        # Optional fields should have their defaults
-        assert meta.start_note == 21
-        assert meta.end_note == 108
+MINIMAL_OUTPUT = ""  # all fields optional
+
+
+class TestParseOutputMeta:
+    def test_empty_file_uses_all_defaults(self, tmp_path):
+        write_output_toml(tmp_path, "")
+        meta = parse_output_meta(tmp_path)
         assert meta.min_note == 21
         assert meta.max_note == 108
         assert meta.note_percentage == 100.0
         assert meta.crossfade_percent == 0.0
         assert meta.normalize is True
         assert meta.normalize_mode == "lufs"
-        assert meta.normalize_target_lufs == -18.0
-        assert meta.peak_ceiling_db == -1.0
         assert meta.ampeg_release == 0.5
 
-    def test_release_overrides_absent_gives_none(self, tmp_path):
-        p = write_metadata(tmp_path, VALID_METADATA)
-        meta = parse_metadata(p)
-        assert meta.release_hold_time is None
-        assert meta.release_release_time is None
-
-    def test_release_overrides_parsed_when_present(self, tmp_path):
-        content = VALID_METADATA + "\nrelease_hold_time = 6.0\nrelease_release_time = 3.5\n"
-        p = write_metadata(tmp_path, content)
-        meta = parse_metadata(p)
-        assert meta.release_hold_time == 6.0
-        assert meta.release_release_time == 3.5
-
-    def test_comments_ignored(self, tmp_path):
-        content = "# This is a comment\n" + VALID_METADATA + "\n# Another comment\n"
-        p = write_metadata(tmp_path, content)
-        meta = parse_metadata(p)
-        assert meta.velocity_layers == 4
-
-    def test_blank_lines_ignored(self, tmp_path):
-        content = "\n\n" + VALID_METADATA + "\n\n"
-        p = write_metadata(tmp_path, content)
-        meta = parse_metadata(p)
-        assert meta.velocity_layers == 4
-
-    def test_case_insensitive_keys(self, tmp_path):
-        content = VALID_METADATA.replace("velocity_layers = 4", "VELOCITY_LAYERS = 4")
-        p = write_metadata(tmp_path, content)
-        meta = parse_metadata(p)
-        assert meta.velocity_layers == 4
-
-    def test_unknown_keys_ignored(self, tmp_path):
-        content = VALID_METADATA + "\nsome_future_field = 99\n"
-        p = write_metadata(tmp_path, content)
-        meta = parse_metadata(p)
-        assert meta.velocity_layers == 4  # parse succeeded despite unknown key
-
-    def test_bool_true(self, tmp_path):
-        content = VALID_METADATA + "\nnormalize = true\n"
-        p = write_metadata(tmp_path, content)
-        assert parse_metadata(p).normalize is True
-
-    def test_bool_false(self, tmp_path):
-        content = VALID_METADATA + "\nnormalize = false\n"
-        p = write_metadata(tmp_path, content)
-        assert parse_metadata(p).normalize is False
-
-    def test_bool_invalid(self, tmp_path):
-        content = VALID_METADATA + "\nnormalize = yes\n"
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError, match="true/false"):
-            parse_metadata(p)
-
-    def test_missing_required_field(self, tmp_path):
-        # Remove velocity_layers (required)
-        content = "\n".join(
-            line for line in VALID_METADATA.splitlines()
-            if "velocity_layers" not in line
-        )
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError, match="velocity_layers"):
-            parse_metadata(p)
-
-    def test_invalid_int(self, tmp_path):
-        content = VALID_METADATA.replace("velocity_layers = 4", "velocity_layers = abc")
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError):
-            parse_metadata(p)
-
-    def test_invalid_float(self, tmp_path):
-        content = VALID_METADATA.replace("hold_time = 4.0", "hold_time = notanumber")
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError):
-            parse_metadata(p)
+    def test_override_fields(self, tmp_path):
+        content = "min_note=36\nmax_note=96\nnote_percentage=50.0\n"
+        write_output_toml(tmp_path, content)
+        meta = parse_output_meta(tmp_path)
+        assert meta.min_note == 36
+        assert meta.max_note == 96
+        assert meta.note_percentage == 50.0
 
     def test_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            parse_metadata(tmp_path / "nonexistent.txt")
+            parse_output_meta(tmp_path / "nonexistent.toml")
 
-    def test_malformed_line(self, tmp_path):
-        content = VALID_METADATA + "\nthis line has no equals sign\n"
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError, match="key = value"):
-            parse_metadata(p)
-
-    # --- Semantic validation ---
-
-    def test_velocity_layers_out_exceeds_recorded(self, tmp_path):
-        content = VALID_METADATA.replace("velocity_layers_out = 4", "velocity_layers_out = 8")
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError, match="velocity_layers_out"):
-            parse_metadata(p)
+    def test_dir_resolves_to_output_toml(self, tmp_path):
+        write_output_toml(tmp_path, "")
+        meta = parse_output_meta(tmp_path)
+        assert meta is not None
 
     def test_min_note_greater_than_max_note(self, tmp_path):
-        content = VALID_METADATA + "\nmin_note = 80\nmax_note = 40\n"
-        p = write_metadata(tmp_path, content)
+        write_output_toml(tmp_path, "min_note=80\nmax_note=40\n")
         with pytest.raises(MetadataError, match="min_note"):
-            parse_metadata(p)
+            parse_output_meta(tmp_path)
 
     def test_note_percentage_out_of_range(self, tmp_path):
-        content = VALID_METADATA + "\nnote_percentage = 0\n"
-        p = write_metadata(tmp_path, content)
+        write_output_toml(tmp_path, "note_percentage=0\n")
         with pytest.raises(MetadataError, match="note_percentage"):
-            parse_metadata(p)
+            parse_output_meta(tmp_path)
 
     def test_normalize_mode_invalid(self, tmp_path):
-        content = VALID_METADATA + "\nnormalize_mode = peak\n"
-        p = write_metadata(tmp_path, content)
+        write_output_toml(tmp_path, 'normalize_mode="peak"\n')
         with pytest.raises(MetadataError, match="normalize_mode"):
-            parse_metadata(p)
+            parse_output_meta(tmp_path)
 
     def test_normalize_mode_velocity(self, tmp_path):
-        content = VALID_METADATA + "\nnormalize_mode = velocity\n"
-        p = write_metadata(tmp_path, content)
-        assert parse_metadata(p).normalize_mode == "velocity"
+        write_output_toml(tmp_path, 'normalize_mode="velocity"\n')
+        meta = parse_output_meta(tmp_path)
+        assert meta.normalize_mode == "velocity"
 
-    def test_release_hold_time_invalid(self, tmp_path):
-        content = VALID_METADATA + "\nrelease_hold_time = -1.0\n"
-        p = write_metadata(tmp_path, content)
-        with pytest.raises(MetadataError, match="release_hold_time"):
-            parse_metadata(p)
-
-    def test_crossfade_percent_out_of_range(self, tmp_path):
-        content = VALID_METADATA + "\ncrossfade_percent = 150\n"
-        p = write_metadata(tmp_path, content)
+    def test_crossfade_out_of_range(self, tmp_path):
+        write_output_toml(tmp_path, "crossfade_percent=150\n")
         with pytest.raises(MetadataError, match="crossfade_percent"):
-            parse_metadata(p)
+            parse_output_meta(tmp_path)
+
+    def test_wrong_type_raises(self, tmp_path):
+        # normalize expects bool, not a string
+        write_output_toml(tmp_path, 'normalize="yes"\n')
+        with pytest.raises(MetadataError):
+            parse_output_meta(tmp_path)
+
+    def test_int_coerced_to_float(self, tmp_path):
+        write_output_toml(tmp_path, "ampeg_release=1\n")
+        meta = parse_output_meta(tmp_path)
+        assert meta.ampeg_release == 1.0
+        assert isinstance(meta.ampeg_release, float)
+
+    def test_no_recording_fields_parsed(self, tmp_path):
+        """output.toml has no concept of recording params — they're silently ignored."""
+        write_output_toml(tmp_path, "velocity_layers=4\nhold_time=5.0\n")
+        meta = parse_output_meta(tmp_path)
+        assert not hasattr(meta, "velocity_layers")
+        assert not hasattr(meta, "hold_time")

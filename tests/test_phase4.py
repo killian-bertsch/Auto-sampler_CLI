@@ -26,16 +26,9 @@ SR = 44100
 
 def make_meta(**kwargs) -> InstrumentMeta:
     defaults = dict(
-        velocity_layers=1,
-        semitone_interval=12,
-        hold_time=1.0,
-        release_time=0.5,
-        start_note=60,
-        end_note=60,
         min_note=60,
         max_note=60,
         note_percentage=100.0,
-        velocity_layers_out=1,
         crossfade_percent=0.0,
         normalize=False,
         normalize_mode="rms",

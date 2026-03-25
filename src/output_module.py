@@ -10,19 +10,21 @@ Output structure:
         samples/release/
             {instrument_name}_{note_name}_v{velocity}_rel.flac
 
+Velocity zones are built per-note from whatever velocities were actually
+recorded for that note — fully supporting non-uniform velocity layers.
+
 Entry point: write_instrument(data, output_root) -> dict
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import numpy as np
 import soundfile as sf
 
 from .data import InstrumentData, InstrumentMeta, Sample
-from .metadata_parser import parse_velocity_map
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +41,7 @@ def midi_to_note_name(midi: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Subset selection
+# Note subset selection
 # ---------------------------------------------------------------------------
 
 def select_notes(notes: List[int], note_percentage: float) -> List[int]:
@@ -59,52 +61,6 @@ def select_notes(notes: List[int], note_percentage: float) -> List[int]:
         return [notes[n // 2]]
     indices = {round(i * (n - 1) / (target - 1)) for i in range(target)}
     return [notes[i] for i in sorted(indices)]
-
-
-def select_velocities(velocities: List[int], velocity_layers_out: int) -> List[int]:
-    """
-    Return an evenly-spaced subset of `velocities` of size velocity_layers_out.
-
-    `velocities` must be sorted. When velocity_layers_out == 1 the highest
-    velocity is returned (loudest layer covers the full range).
-    """
-    n = len(velocities)
-    if n == 0:
-        return []
-    k = min(velocity_layers_out, n)
-    if k >= n:
-        return list(velocities)
-    if k == 1:
-        return [velocities[-1]]
-    indices = {round(i * (n - 1) / (k - 1)) for i in range(k)}
-    return [velocities[i] for i in sorted(indices)]
-
-
-def select_velocities_segmented(velocities: List[int], velocity_map: str) -> List[int]:
-    """
-    Select velocity layers according to a segment map string.
-
-    Format: "lo-hi:n, lo-hi:n, ..."
-      Each segment picks n evenly-spaced layers from the recorded velocities
-      whose value falls within [lo, hi]. Segments may overlap; duplicates are
-      deduplicated in the final result.
-
-    `velocities` must be sorted ascending.
-
-    When a segment contains fewer recorded velocities than n, all velocities
-    in that segment are used (no error — it's a soft ceiling).
-
-    Returns a sorted, deduplicated list of selected velocity values.
-    """
-    segments = parse_velocity_map(velocity_map)
-    selected: set[int] = set()
-    for lo, hi, n in segments:
-        in_range = [v for v in velocities if lo <= v <= hi]
-        if not in_range:
-            continue
-        chosen = select_velocities(in_range, n)
-        selected.update(chosen)
-    return sorted(selected)
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +89,11 @@ def compute_note_ranges(
 
 
 def compute_velocity_ranges(
-    selected_vels: List[int], crossfade_percent: float
+    velocities: List[int], crossfade_percent: float
 ) -> List[dict]:
     """
-    For a sorted list of selected velocities, compute SFZ velocity zone
-    boundaries with optional crossfade overlap.
+    For a sorted list of velocities, compute SFZ velocity zone boundaries
+    with optional crossfade overlap.
 
     crossfade_percent (0–100) is the fraction of each zone's natural width
     that extends into adjacent zones, enabling xfin/xfout crossfading.
@@ -146,7 +102,7 @@ def compute_velocity_ranges(
     xfin_lovel, xfin_hivel, xfout_lovel, xfout_hivel,
     has_xfin (bool), has_xfout (bool).
     """
-    vels = sorted(selected_vels)
+    vels = sorted(velocities)
     n = len(vels)
     result = []
     for i, vc in enumerate(vels):
@@ -156,7 +112,6 @@ def compute_velocity_ranges(
         zone_width = hi_nat - lo_nat + 1
         xfade = int(crossfade_percent / 100.0 * zone_width)
 
-        # Extend zone boundaries outward by xfade (only inward toward adjacent zones)
         lovel = max(1, lo_nat - xfade) if i > 0 else 1
         hivel = min(127, hi_nat + xfade) if i < n - 1 else 127
 
@@ -164,13 +119,11 @@ def compute_velocity_ranges(
             "velocity": vc,
             "lovel": lovel,
             "hivel": hivel,
-            # xfin: region fades in from lovel up to lo_nat
-            "xfin_lovel": lovel,
-            "xfin_hivel": lo_nat,
-            # xfout: region fades out from hi_nat up to hivel
+            "xfin_lovel":  lovel,
+            "xfin_hivel":  lo_nat,
             "xfout_lovel": hi_nat,
             "xfout_hivel": hivel,
-            "has_xfin": i > 0 and xfade > 0,
+            "has_xfin":  i > 0 and xfade > 0,
             "has_xfout": i < n - 1 and xfade > 0,
         })
     return result
@@ -191,7 +144,7 @@ def estimate_rt_decay(audio: np.ndarray, sr: int) -> float:
     window = max(1, int(0.02 * sr))
     n_windows = len(mono) // window
     if n_windows < 2:
-        return 6.0  # sensible default
+        return 6.0
 
     rms_db = []
     for i in range(n_windows):
@@ -203,7 +156,6 @@ def estimate_rt_decay(audio: np.ndarray, sr: int) -> float:
     db_arr = np.array(rms_db)
     n_use = max(2, int(n_windows * 0.8))
     slope, _ = np.polyfit(times[:n_use], db_arr[:n_use], 1)
-    # slope is negative (dB/s decay); rt_decay is the positive magnitude
     return float(np.clip(-slope, 1.0, 24.0))
 
 
@@ -215,14 +167,13 @@ def _amp_velcurve_1(meta: InstrumentMeta) -> float:
     """
     Compute the SFZ amp_velcurve_1 value (gain at velocity=1 relative to 127).
 
-    In velocity mode, the dynamic range is computed from audio and stored in
-    meta.computed_dynamic_range_db.  In lufs/rms modes, meta.velocity_dynamic_range_db
-    is used directly.
+    In velocity mode the dynamics are already baked into the audio by
+    NormalizeProcessor, so amp_velcurve_1 is set to 1.0 (flat SFZ curve).
+    In lufs/rms modes, velocity_dynamic_range_db drives the curve.
     """
-    if meta.normalize_mode == "velocity" and meta.computed_dynamic_range_db is not None:
-        range_db = meta.computed_dynamic_range_db
-    else:
-        range_db = meta.velocity_dynamic_range_db
+    if meta.normalize_mode == "velocity":
+        return 1.0
+    range_db = meta.velocity_dynamic_range_db
     return 10.0 ** (-range_db / 20.0)
 
 
@@ -276,7 +227,6 @@ def generate_release_sfz(regions: List[dict], meta: InstrumentMeta) -> str:
 
     Each region dict must have: filename, lokey, hikey, pitch_keycenter,
     lovel, hivel, rt_decay.
-    ampeg_attack is set to meta.ampeg_release (matching sustain's release time).
     """
     amp_vel1 = _amp_velcurve_1(meta)
     lines = [
@@ -324,11 +274,11 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
 
     Steps:
       1. Apply note subset selection (note_percentage within [min_note, max_note])
-      2. Apply velocity subset selection (velocity_map segments, or velocity_layers_out evenly spaced)
-      3. Compute key zones and velocity zones (with crossfade)
-      4. Encode each selected sustain sample to 24-bit FLAC
-      5. Generate and write {instrument_name}_sustain.sfz
-      6. If release samples exist: encode + generate {instrument_name}_release.sfz
+      2. For each selected note, build velocity zones from that note's recorded
+         velocities (fully supports non-uniform layers across notes)
+      3. Encode each sustain sample to 24-bit FLAC
+      4. Generate and write {instrument_name}_sustain.sfz
+      5. If release samples exist: encode + generate {instrument_name}_release.sfz
 
     Args:
         data:        Fully processed InstrumentData (all processors have run).
@@ -340,36 +290,22 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
     meta = data.meta
     name = meta.instrument_name
 
-    out_dir = output_root / name
+    out_dir     = output_root / name
     samples_dir = out_dir / "samples"
     release_dir = samples_dir / "release"
     samples_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Subset selection ─────────────────────────────────────────────────────
-    # Notes in [min_note, max_note] actually present in sustain samples
+    # ── Note subset selection ─────────────────────────────────────────────
     all_notes = sorted(set(
         s.midi_note for s in data.sustain
         if meta.min_note <= s.midi_note <= meta.max_note
     ))
     selected_notes = select_notes(all_notes, meta.note_percentage)
-    note_set = set(selected_notes)
 
-    # Velocity layers present in sustain samples
-    all_vels = sorted(set(s.velocity for s in data.sustain))
-    if meta.velocity_map is not None:
-        selected_vels = select_velocities_segmented(all_vels, meta.velocity_map)
-    else:
-        selected_vels = select_velocities(all_vels, meta.velocity_layers_out)
-    vel_set = set(selected_vels)
-
-    # ── Zone computation ─────────────────────────────────────────────────────
     note_ranges = compute_note_ranges(selected_notes, meta.min_note, meta.max_note)
-    note_to_range = {nr["midi_note"]: nr for nr in note_ranges}
+    note_to_range: Dict[int, dict] = {nr["midi_note"]: nr for nr in note_ranges}
 
-    vel_ranges = compute_velocity_ranges(selected_vels, meta.crossfade_percent)
-    vel_to_range = {vr["velocity"]: vr for vr in vel_ranges}
-
-    # ── Sustain samples ───────────────────────────────────────────────────────
+    # ── Sustain samples ───────────────────────────────────────────────────
     sfz_regions: List[dict] = []
     files_written = 0
 
@@ -377,11 +313,17 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
         nrng = note_to_range[midi_note]
         note_name = midi_to_note_name(midi_note)
 
-        note_samples = [
-            s for s in data.sustain
-            if s.midi_note == midi_note and s.velocity in vel_set
-        ]
-        note_samples.sort(key=lambda s: s.velocity)
+        note_samples = sorted(
+            [s for s in data.sustain if s.midi_note == midi_note],
+            key=lambda s: s.velocity,
+        )
+        if not note_samples:
+            continue
+
+        # Per-note velocity zones — built from this note's actual velocities
+        note_vels = [s.velocity for s in note_samples]
+        vel_ranges = compute_velocity_ranges(note_vels, meta.crossfade_percent)
+        vel_to_range: Dict[int, dict] = {vr["velocity"]: vr for vr in vel_ranges}
 
         for sample in note_samples:
             vrng = vel_to_range[sample.velocity]
@@ -390,82 +332,101 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
             files_written += 1
 
             sfz_regions.append({
-                "filename": filename,
-                "lokey": nrng["lokey"],
-                "hikey": nrng["hikey"],
+                "filename":        filename,
+                "lokey":           nrng["lokey"],
+                "hikey":           nrng["hikey"],
                 "pitch_keycenter": midi_note,
-                "lovel": vrng["lovel"],
-                "hivel": vrng["hivel"],
-                "has_xfin": vrng["has_xfin"],
-                "has_xfout": vrng["has_xfout"],
-                "xfin_lovel": vrng["xfin_lovel"],
-                "xfin_hivel": vrng["xfin_hivel"],
-                "xfout_lovel": vrng["xfout_lovel"],
-                "xfout_hivel": vrng["xfout_hivel"],
-                "loop_start": sample.loop_start,
-                "loop_end": sample.loop_end,
+                "lovel":           vrng["lovel"],
+                "hivel":           vrng["hivel"],
+                "has_xfin":        vrng["has_xfin"],
+                "has_xfout":       vrng["has_xfout"],
+                "xfin_lovel":      vrng["xfin_lovel"],
+                "xfin_hivel":      vrng["xfin_hivel"],
+                "xfout_lovel":     vrng["xfout_lovel"],
+                "xfout_hivel":     vrng["xfout_hivel"],
+                "loop_start":      sample.loop_start,
+                "loop_end":        sample.loop_end,
             })
 
     sustain_sfz_text = generate_sustain_sfz(sfz_regions, meta)
     (out_dir / f"{name}_sustain.sfz").write_text(sustain_sfz_text, encoding="utf-8")
 
-    # Velocity mode: write a report telling the user what dB value to set in AudioLayer
+    # Velocity mode report
     if meta.normalize_mode == "velocity" and meta.computed_dynamic_range_db is not None:
         range_db = meta.computed_dynamic_range_db
-        vel1_db = -range_db  # dB level of velocity=1 relative to velocity=127
         report = (
             f"Velocity Dynamic Range Report — {name}\n"
             f"{'=' * 50}\n\n"
             f"Measured dynamic range: {range_db:.1f} dB\n\n"
-            f"In AudioLayer, set the velocity curve minimum to:\n"
-            f"  {vel1_db:.1f} dB\n\n"
-            f"(This is the gain at velocity=1 relative to velocity=127)\n"
+            f"Dynamics are fully baked into audio samples.\n"
+            f"SFZ amp_velcurve_1 = 1.0 (flat — no additional scaling).\n"
         )
         (out_dir / "velocity_range.txt").write_text(report, encoding="utf-8")
 
-    # ── Release samples ───────────────────────────────────────────────────────
+    # ── Release samples ───────────────────────────────────────────────────
     release_sfz_regions: List[dict] = []
 
     if data.release:
         release_dir.mkdir(parents=True, exist_ok=True)
 
-        for midi_note in selected_notes:
-            nrng = note_to_range[midi_note]
+        # Note ranges for release — built from release notes actually present
+        all_rel_notes = sorted(set(
+            s.midi_note for s in data.release
+            if meta.min_note <= s.midi_note <= meta.max_note
+        ))
+        rel_selected_notes = select_notes(all_rel_notes, meta.note_percentage)
+        rel_note_ranges = compute_note_ranges(
+            rel_selected_notes, meta.min_note, meta.max_note
+        )
+        rel_note_to_range: Dict[int, dict] = {
+            nr["midi_note"]: nr for nr in rel_note_ranges
+        }
+
+        for midi_note in rel_selected_notes:
+            nrng = rel_note_to_range[midi_note]
             note_name = midi_to_note_name(midi_note)
 
-            rel_samples = [
-                s for s in data.release
-                if s.midi_note == midi_note and s.velocity in vel_set
-            ]
-            rel_samples.sort(key=lambda s: s.velocity)
+            rel_samples = sorted(
+                [s for s in data.release if s.midi_note == midi_note],
+                key=lambda s: s.velocity,
+            )
+            if not rel_samples:
+                continue
+
+            # Per-note velocity zones for release
+            rel_vels = [s.velocity for s in rel_samples]
+            rel_vel_ranges = compute_velocity_ranges(rel_vels, meta.crossfade_percent)
+            rel_vel_to_range: Dict[int, dict] = {
+                vr["velocity"]: vr for vr in rel_vel_ranges
+            }
 
             for sample in rel_samples:
-                vrng = vel_to_range.get(sample.velocity)
-                if vrng is None:
-                    continue
+                vrng = rel_vel_to_range[sample.velocity]
                 filename = f"{name}_{note_name}_v{sample.velocity}_rel.flac"
                 encode_flac(sample.audio, sample.sr, release_dir / filename)
                 files_written += 1
 
                 rt_decay = estimate_rt_decay(sample.audio, sample.sr)
                 release_sfz_regions.append({
-                    "filename": filename,
-                    "lokey": nrng["lokey"],
-                    "hikey": nrng["hikey"],
+                    "filename":        filename,
+                    "lokey":           nrng["lokey"],
+                    "hikey":           nrng["hikey"],
                     "pitch_keycenter": midi_note,
-                    "lovel": vrng["lovel"],
-                    "hivel": vrng["hivel"],
-                    "rt_decay": rt_decay,
+                    "lovel":           vrng["lovel"],
+                    "hivel":           vrng["hivel"],
+                    "rt_decay":        rt_decay,
                 })
 
         if release_sfz_regions:
             release_sfz_text = generate_release_sfz(release_sfz_regions, meta)
-            (out_dir / f"{name}_release.sfz").write_text(release_sfz_text, encoding="utf-8")
+            (out_dir / f"{name}_release.sfz").write_text(
+                release_sfz_text, encoding="utf-8"
+            )
 
     return {
-        "instrument_name": name,
-        "output_dir": str(out_dir),
-        "files_written": files_written,
-        "sustain_regions": len(sfz_regions),
-        "release_regions": len(release_sfz_regions),
+        "instrument_name":  name,
+        "output_dir":       str(out_dir),
+        "files_written":    files_written,
+        "sustain_regions":  len(sfz_regions),
+        "release_regions":  len(release_sfz_regions),
     }

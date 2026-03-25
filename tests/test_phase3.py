@@ -33,16 +33,9 @@ SR = 44100
 
 def make_meta(**kwargs) -> InstrumentMeta:
     defaults = dict(
-        velocity_layers=3,
-        semitone_interval=12,
-        hold_time=1.0,
-        release_time=0.5,
-        start_note=60,
-        end_note=72,
         min_note=60,
         max_note=72,
         note_percentage=100.0,
-        velocity_layers_out=3,
         crossfade_percent=0.0,
         normalize=True,
         normalize_mode="rms",
@@ -383,8 +376,6 @@ class TestNormalizeProcessorVelocity:
             for v, a in zip(velocities, amplitudes)
         ]
         defaults = dict(
-            velocity_layers=len(velocities),
-            velocity_layers_out=len(velocities),
             normalize_mode="velocity",
             peak_ceiling_db=-1.0,
         )
@@ -434,8 +425,6 @@ class TestNormalizeProcessorVelocity:
         ]
         data = make_data(
             samples,
-            velocity_layers=2,
-            velocity_layers_out=2,
             normalize_mode="velocity",
             peak_ceiling_db=-1.0,
         )
@@ -451,8 +440,6 @@ class TestNormalizeProcessorVelocity:
         data = make_data(
             sustain=[s_sust],
             release=[s_rel],
-            velocity_layers=1,
-            velocity_layers_out=1,
             normalize_mode="velocity",
             peak_ceiling_db=-1.0,
         )
@@ -466,8 +453,6 @@ class TestNormalizeProcessorVelocity:
         s = make_sample(midi_note=60, velocity=64, audio=dc_audio.copy())
         data = make_data(
             [s],
-            velocity_layers=1,
-            velocity_layers_out=1,
             normalize_mode="velocity",
         )
         result = NormalizeProcessor().process(data)

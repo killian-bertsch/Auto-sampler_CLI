@@ -6,137 +6,111 @@ Tests cover:
   - process_instrument() full pipeline on a synthetic instrument
   - main() argument parsing and return codes
   - Bulk processing of multiple instruments
-  - Graceful skip on missing / invalid metadata
+  - Graceful skip on missing / invalid files
 """
 
 from __future__ import annotations
 
 import sys
-import textwrap
 from pathlib import Path
+from typing import List
 
 import numpy as np
 import pytest
 import soundfile as sf
 
-# Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from main import find_instruments, process_instrument, main
 
+
 # ---------------------------------------------------------------------------
-# Helpers to build synthetic instrument folders
+# Helpers
 # ---------------------------------------------------------------------------
 
 SR = 22050
-VELOCITY_LAYERS = 2
-SEMITONE_INTERVAL = 12   # C3=48, C4=60 — only 2 notes
-HOLD_TIME = 0.3
-RELEASE_TIME = 0.1
-START_NOTE = 48
-END_NOTE = 60
+
+# Two notes (C3=48, C4=60), two velocities each
+_DEFS = [
+    {"note": 48, "velocity": 43,  "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+    {"note": 48, "velocity": 85,  "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+    {"note": 60, "velocity": 43,  "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+    {"note": 60, "velocity": 85,  "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+]
+
+_DEFS_WITH_RELEASE = _DEFS + [
+    {"note": 48, "velocity": 43,  "hold_s": 0.1, "tail_s": 0.2, "is_release": True},
+    {"note": 48, "velocity": 85,  "hold_s": 0.1, "tail_s": 0.2, "is_release": True},
+    {"note": 60, "velocity": 43,  "hold_s": 0.1, "tail_s": 0.2, "is_release": True},
+    {"note": 60, "velocity": 85,  "hold_s": 0.1, "tail_s": 0.2, "is_release": True},
+]
 
 
-def _make_tone(freq: float, duration: float, sr: int, amplitude: float = 0.5) -> np.ndarray:
-    """Generate a simple sine tone."""
-    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
-    return (amplitude * np.sin(2 * np.pi * freq * t)).astype(np.float64)
+def _make_samples_flac(folder: Path, defs: List[dict]) -> None:
+    total_s = sum(d["hold_s"] + d["tail_s"] for d in defs)
+    total_frames = int(round(total_s * SR))
+    audio = np.zeros(total_frames, dtype=np.float32)
+
+    offset_s = 0.0
+    for d in defs:
+        start = int(round(offset_s * SR))
+        hold_f = int(round(d["hold_s"] * SR))
+        tail_f = int(round(d["tail_s"] * SR))
+        freq = 440.0 * 2 ** ((d["note"] - 69) / 12.0)
+        amp = (d["velocity"] / 127.0) * 0.5
+        t = np.arange(hold_f + tail_f) / SR
+        tone = (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+        end = min(start + len(tone), total_frames)
+        audio[start:end] = tone[:end - start]
+        offset_s += d["hold_s"] + d["tail_s"]
+
+    sf.write(str(folder / "samples.flac"), audio, SR)
 
 
-def _make_sustain_wav(path: Path) -> None:
-    """
-    Build a sustain.wav:  velocity_layers × notes_count slices.
-    Layout per V2 convention: velocity outer loop, note inner loop.
-    Each slice = hold_time + release_time seconds.
-    Notes: C3(48), C4(60)  |  Velocities: ~43, ~85 (evenly spaced, 2 layers)
-    """
-    slice_len = int(SR * (HOLD_TIME + RELEASE_TIME))
-    # 2 velocities × 2 notes = 4 slices
-    freqs = {48: 130.81, 60: 261.63}
-    velocities = [43, 85]
-    notes = [48, 60]
-
-    chunks = []
-    for vel in velocities:
-        amp = (vel / 127.0) * 0.8
-        for note in notes:
-            tone = _make_tone(freqs[note], HOLD_TIME + RELEASE_TIME, SR, amp)
-            # Pad or trim to exact slice length
-            if len(tone) < slice_len:
-                tone = np.pad(tone, (0, slice_len - len(tone)))
-            else:
-                tone = tone[:slice_len]
-            chunks.append(tone)
-
-    audio = np.concatenate(chunks)
-    sf.write(str(path), audio, SR)
+def _make_input_toml(folder: Path, defs: List[dict]) -> None:
+    entries = []
+    for d in defs:
+        is_rel = "true" if d.get("is_release", False) else "false"
+        entries.append(
+            f'  {{note={d["note"]}, velocity={d["velocity"]}, '
+            f'hold_s={d["hold_s"]}, tail_s={d["tail_s"]}, is_release={is_rel}}}'
+        )
+    content = (
+        "collapse_to_mono = false\n"
+        "samples = [\n"
+        + ",\n".join(entries) + "\n"
+        "]\n"
+    )
+    (folder / "input.toml").write_text(content)
 
 
-def _make_release_wav(path: Path) -> None:
-    """Build a release.wav with same layout but shorter hold/release."""
-    rel_hold = 0.1
-    rel_release = 0.05
-    slice_len = int(SR * (rel_hold + rel_release))
-    freqs = {48: 130.81, 60: 261.63}
-    velocities = [43, 85]
-    notes = [48, 60]
-
-    chunks = []
-    for vel in velocities:
-        amp = (vel / 127.0) * 0.4
-        for note in notes:
-            tone = _make_tone(freqs[note], rel_hold + rel_release, SR, amp)
-            if len(tone) < slice_len:
-                tone = np.pad(tone, (0, slice_len - len(tone)))
-            else:
-                tone = tone[:slice_len]
-            chunks.append(tone)
-
-    audio = np.concatenate(chunks)
-    sf.write(str(path), audio, SR)
+def _make_output_toml(folder: Path, instrument_name: str = "") -> None:
+    content = (
+        f'instrument_name = "{instrument_name}"\n'
+        "min_note = 48\n"
+        "max_note = 60\n"
+        "note_percentage = 100\n"
+        "crossfade_percent = 0\n"
+        "normalize = false\n"
+        'normalize_mode = "rms"\n'
+        "normalize_target_lufs = -18.0\n"
+        "peak_ceiling_db = -1.0\n"
+        "velocity_dynamic_range_db = 30.0\n"
+        "ampeg_release = 0.5\n"
+        "loop_crossfade_ms = 0\n"
+    )
+    (folder / "output.toml").write_text(content)
 
 
-def _make_metadata(path: Path, instrument_name: str = "TestInstrument",
-                   include_release_params: bool = False) -> None:
-    """Write a minimal valid metadata.txt."""
-    content = textwrap.dedent(f"""\
-        instrument_name = {instrument_name}
-        velocity_layers = {VELOCITY_LAYERS}
-        semitone_interval = {SEMITONE_INTERVAL}
-        hold_time = {HOLD_TIME}
-        release_time = {RELEASE_TIME}
-        start_note = {START_NOTE}
-        end_note = {END_NOTE}
-        min_note = {START_NOTE}
-        max_note = {END_NOTE}
-        note_percentage = 100
-        velocity_layers_out = {VELOCITY_LAYERS}
-        crossfade_percent = 0
-        normalize_mode = rms
-        normalize_target_db = -18.0
-        peak_ceiling_db = -1.0
-        velocity_dynamic_range_db = 30.0
-        ampeg_release = 0.5
-        loop_crossfade_ms = 0
-        collapse_to_mono = false
-    """)
-    if include_release_params:
-        content += textwrap.dedent("""\
-            release_hold_time = 0.1
-            release_release_time = 0.05
-        """)
-    path.write_text(content, encoding="utf-8")
-
-
-def _make_instrument_folder(base: Path, name: str = "TestInstrument",
-                             with_release: bool = False) -> Path:
+def _make_instrument_folder(
+    base: Path, name: str = "TestInstrument", with_release: bool = False
+) -> Path:
     folder = base / name
     folder.mkdir(parents=True, exist_ok=True)
-    _make_sustain_wav(folder / "sustain.wav")
-    _make_metadata(folder / "metadata.txt", instrument_name=name,
-                   include_release_params=with_release)
-    if with_release:
-        _make_release_wav(folder / "release.wav")
+    defs = _DEFS_WITH_RELEASE if with_release else _DEFS
+    _make_samples_flac(folder, defs)
+    _make_input_toml(folder, defs)
+    _make_output_toml(folder, instrument_name=name)
     return folder
 
 
@@ -148,36 +122,39 @@ class TestFindInstruments:
     def test_finds_valid_subfolders(self, tmp_path):
         _make_instrument_folder(tmp_path, "Piano")
         _make_instrument_folder(tmp_path, "Strings")
-        result = find_instruments(tmp_path)
-        names = [p.name for p in result]
+        names = [p.name for p in find_instruments(tmp_path)]
         assert "Piano" in names
         assert "Strings" in names
 
-    def test_skips_folders_missing_metadata(self, tmp_path):
-        folder = tmp_path / "NoMeta"
+    def test_skips_folders_missing_input_toml(self, tmp_path):
+        folder = tmp_path / "NoInput"
         folder.mkdir()
-        _make_sustain_wav(folder / "sustain.wav")
-        result = find_instruments(tmp_path)
-        assert result == []
+        _make_samples_flac(folder, _DEFS)
+        _make_output_toml(folder)
+        assert find_instruments(tmp_path) == []
 
-    def test_skips_folders_missing_sustain_wav(self, tmp_path):
-        folder = tmp_path / "NoWav"
+    def test_skips_folders_missing_output_toml(self, tmp_path):
+        folder = tmp_path / "NoOutput"
         folder.mkdir()
-        _make_metadata(folder / "metadata.txt", "NoWav")
-        result = find_instruments(tmp_path)
-        assert result == []
+        _make_samples_flac(folder, _DEFS)
+        _make_input_toml(folder, _DEFS)
+        assert find_instruments(tmp_path) == []
+
+    def test_skips_folders_missing_samples_flac(self, tmp_path):
+        folder = tmp_path / "NoAudio"
+        folder.mkdir()
+        _make_input_toml(folder, _DEFS)
+        _make_output_toml(folder)
+        assert find_instruments(tmp_path) == []
 
     def test_ignores_files_at_top_level(self, tmp_path):
-        (tmp_path / "metadata.txt").write_text("x=1")
-        (tmp_path / "sustain.wav").write_text("not a wav")
-        result = find_instruments(tmp_path)
-        assert result == []
+        (tmp_path / "input.toml").write_text("x=1")
+        assert find_instruments(tmp_path) == []
 
     def test_returns_sorted_order(self, tmp_path):
         for name in ["Cello", "Banjo", "Accordion"]:
             _make_instrument_folder(tmp_path, name)
-        result = find_instruments(tmp_path)
-        names = [p.name for p in result]
+        names = [p.name for p in find_instruments(tmp_path)]
         assert names == sorted(names)
 
     def test_empty_target_dir(self, tmp_path):
@@ -191,68 +168,84 @@ class TestFindInstruments:
 class TestProcessInstrument:
     def test_succeeds_on_valid_instrument(self, tmp_path):
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
-        out = tmp_path / "output"
-        result = process_instrument(instr, out)
-        assert result is True
+        assert process_instrument(instr, tmp_path / "output") is True
 
     def test_creates_output_directory(self, tmp_path):
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
-        out = tmp_path / "output"
-        process_instrument(instr, out)
-        assert (out / "Piano").is_dir()
+        process_instrument(instr, tmp_path / "output")
+        assert (tmp_path / "output" / "Piano").is_dir()
 
     def test_writes_sustain_sfz(self, tmp_path):
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
-        out = tmp_path / "output"
-        process_instrument(instr, out)
-        sfz = out / "Piano" / "Piano_sustain.sfz"
+        process_instrument(instr, tmp_path / "output")
+        sfz = tmp_path / "output" / "Piano" / "Piano_sustain.sfz"
         assert sfz.exists()
-        text = sfz.read_text()
-        assert "<region>" in text
+        assert "<region>" in sfz.read_text()
 
     def test_writes_flac_files(self, tmp_path):
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
-        out = tmp_path / "output"
-        process_instrument(instr, out)
-        flacs = list((out / "Piano" / "samples").glob("*.flac"))
+        process_instrument(instr, tmp_path / "output")
+        flacs = list((tmp_path / "output" / "Piano" / "samples").glob("*.flac"))
         assert len(flacs) > 0
 
-    def test_with_release_wav(self, tmp_path):
-        instr = _make_instrument_folder(
-            tmp_path / "instruments", "Organ", with_release=True
-        )
+    def test_with_release_samples(self, tmp_path):
+        instr = _make_instrument_folder(tmp_path / "instruments", "Organ", with_release=True)
         out = tmp_path / "output"
-        result = process_instrument(instr, out)
-        assert result is True
-        rel_sfz = out / "Organ" / "Organ_release.sfz"
-        assert rel_sfz.exists()
+        assert process_instrument(instr, out) is True
+        assert (out / "Organ" / "Organ_release.sfz").exists()
         rel_flacs = list((out / "Organ" / "samples" / "release").glob("*.flac"))
         assert len(rel_flacs) > 0
 
-    def test_skips_missing_metadata(self, tmp_path):
+    def test_skips_missing_input_toml(self, tmp_path):
         folder = tmp_path / "Broken"
         folder.mkdir()
-        _make_sustain_wav(folder / "sustain.wav")
-        out = tmp_path / "output"
-        result = process_instrument(folder, out)
-        assert result is False
+        _make_samples_flac(folder, _DEFS)
+        _make_output_toml(folder)
+        assert process_instrument(folder, tmp_path / "output") is False
 
-    def test_skips_invalid_metadata(self, tmp_path):
-        folder = tmp_path / "BadMeta"
+    def test_skips_missing_samples_flac(self, tmp_path):
+        folder = tmp_path / "NoAudio"
         folder.mkdir()
-        _make_sustain_wav(folder / "sustain.wav")
-        (folder / "metadata.txt").write_text("not_a_real_key = whatever\n")
-        out = tmp_path / "output"
-        result = process_instrument(folder, out)
-        assert result is False
+        _make_input_toml(folder, _DEFS)
+        _make_output_toml(folder)
+        assert process_instrument(folder, tmp_path / "output") is False
+
+    def test_skips_invalid_input_toml(self, tmp_path):
+        folder = tmp_path / "BadInput"
+        folder.mkdir()
+        _make_samples_flac(folder, _DEFS)
+        _make_output_toml(folder)
+        (folder / "input.toml").write_text("this is not valid toml :\n")
+        assert process_instrument(folder, tmp_path / "output") is False
 
     def test_no_output_written_on_skip(self, tmp_path):
         folder = tmp_path / "Broken"
         folder.mkdir()
-        _make_sustain_wav(folder / "sustain.wav")
+        _make_samples_flac(folder, _DEFS)
+        _make_output_toml(folder)
         out = tmp_path / "output"
         process_instrument(folder, out)
         assert not (out / "Broken").exists()
+
+    def test_non_uniform_velocities_all_written(self, tmp_path):
+        """Each note's velocity layers are all included in output."""
+        defs = [
+            {"note": 48, "velocity": 1,   "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+            {"note": 48, "velocity": 40,  "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+            {"note": 48, "velocity": 80,  "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+            {"note": 48, "velocity": 127, "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+            {"note": 60, "velocity": 1,   "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+            {"note": 60, "velocity": 127, "hold_s": 0.3, "tail_s": 0.1, "is_release": False},
+        ]
+        folder = tmp_path / "NonUniform"
+        folder.mkdir()
+        _make_samples_flac(folder, defs)
+        _make_input_toml(folder, defs)
+        _make_output_toml(folder, "NonUniform")
+        out = tmp_path / "output"
+        assert process_instrument(folder, out) is True
+        flacs = list((out / "NonUniform" / "samples").glob("*.flac"))
+        assert len(flacs) == 6  # 4 + 2
 
 
 # ---------------------------------------------------------------------------
@@ -269,28 +262,22 @@ class TestMain:
             sys.argv = old
 
     def test_missing_target_dir_returns_1(self, tmp_path):
-        nonexistent = str(tmp_path / "does_not_exist")
-        code = self._run([nonexistent])
-        assert code == 1
+        assert self._run([str(tmp_path / "does_not_exist")]) == 1
 
     def test_empty_target_dir_returns_1(self, tmp_path):
-        code = self._run([str(tmp_path)])
-        assert code == 1
+        assert self._run([str(tmp_path)]) == 1
 
     def test_valid_instrument_returns_0(self, tmp_path):
         _make_instrument_folder(tmp_path / "instruments", "Piano")
         out = tmp_path / "output"
-        code = self._run([str(tmp_path / "instruments"), "--output-dir", str(out)])
-        assert code == 0
+        assert self._run([str(tmp_path / "instruments"), "--output-dir", str(out)]) == 0
 
     def test_instrument_filter_single(self, tmp_path):
         instr_dir = tmp_path / "instruments"
         _make_instrument_folder(instr_dir, "Piano")
         _make_instrument_folder(instr_dir, "Strings")
         out = tmp_path / "output"
-        code = self._run([
-            str(instr_dir), "--output-dir", str(out), "--instrument", "Piano"
-        ])
+        code = self._run([str(instr_dir), "--output-dir", str(out), "--instrument", "Piano"])
         assert code == 0
         assert (out / "Piano").is_dir()
         assert not (out / "Strings").exists()
@@ -298,29 +285,22 @@ class TestMain:
     def test_instrument_filter_nonexistent_returns_1(self, tmp_path):
         instr_dir = tmp_path / "instruments"
         instr_dir.mkdir()
-        out = tmp_path / "output"
-        code = self._run([
-            str(instr_dir), "--output-dir", str(out), "--instrument", "Ghost"
-        ])
-        assert code == 1
+        assert self._run([str(instr_dir), "--output-dir", str(tmp_path / "out"), "--instrument", "Ghost"]) == 1
 
     def test_default_output_dir_is_output(self, tmp_path, monkeypatch):
-        """When --output-dir is omitted, output/ is created relative to cwd."""
         instr_dir = tmp_path / "instruments"
         _make_instrument_folder(instr_dir, "Piano")
         monkeypatch.chdir(tmp_path)
-        code = self._run([str(instr_dir)])
-        assert code == 0
+        assert self._run([str(instr_dir)]) == 0
         assert (tmp_path / "output" / "Piano").is_dir()
 
     def test_all_invalid_returns_1(self, tmp_path):
         instr_dir = tmp_path / "instruments"
-        folder = instr_dir / "Broken"
-        folder.mkdir(parents=True)
-        _make_sustain_wav(folder / "sustain.wav")
-        out = tmp_path / "output"
-        code = self._run([str(instr_dir), "--output-dir", str(out)])
-        assert code == 1
+        broken = instr_dir / "Broken"
+        broken.mkdir(parents=True)
+        _make_samples_flac(broken, _DEFS)
+        _make_output_toml(broken)
+        assert self._run([str(instr_dir), "--output-dir", str(tmp_path / "out")]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +327,12 @@ class TestBulkProcessing:
             assert (out / name / f"{name}_sustain.sfz").exists()
 
     def test_partial_success_returns_0(self, tmp_path):
-        """One valid + one broken instrument: should return 0 (at least one success)."""
         instr_dir = tmp_path / "instruments"
         _make_instrument_folder(instr_dir, "Piano")
         broken = instr_dir / "Broken"
         broken.mkdir()
-        _make_sustain_wav(broken / "sustain.wav")
+        _make_samples_flac(broken, _DEFS)
+        _make_output_toml(broken)
         out = tmp_path / "output"
 
         old = sys.argv
@@ -367,7 +347,6 @@ class TestBulkProcessing:
         assert not (out / "Broken").exists()
 
     def test_flac_files_are_readable(self, tmp_path):
-        """Verify output FLAC files contain valid audio data."""
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
         out = tmp_path / "output"
         process_instrument(instr, out)
@@ -377,12 +356,10 @@ class TestBulkProcessing:
             assert len(audio) > 0
             assert np.all(np.isfinite(audio))
 
-    def test_sustain_sfz_contains_loop_opcodes(self, tmp_path):
-        """Loop points should be set by LoopFinderProcessor and appear in SFZ."""
+    def test_sustain_sfz_is_valid(self, tmp_path):
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
         out = tmp_path / "output"
         process_instrument(instr, out)
         sfz_text = (out / "Piano" / "Piano_sustain.sfz").read_text()
-        # May or may not find loops depending on sample length, but SFZ must be valid
         assert "ampeg_release" in sfz_text
         assert "<region>" in sfz_text
