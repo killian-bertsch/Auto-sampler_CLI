@@ -1,5 +1,6 @@
 # Created by pytest automatically.
 .pytest_cache*
 .venv/*
+advanced-sampler/test/*
 input/*
 output/*

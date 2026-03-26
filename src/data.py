@@ -28,7 +28,7 @@ class InputSampleDef:
     For is_release=True  (release): extract [event_start + hold_s, event_start + hold_s + tail_s]
     """
     note: int        # MIDI note number (0–127)
-    velocity: int    # MIDI velocity (1–127)
+    velocity: int    # minimum velocity of this sample's zone (1–127); zone extends to next_velocity - 1
     hold_s: float    # seconds the note was held
     tail_s: float    # seconds of decay/silence captured after note-off
     is_release: bool # True → extract tail; False → extract hold portion
@@ -39,7 +39,7 @@ class Sample:
     """Represents one individual note+velocity slice of audio."""
 
     midi_note: int          # MIDI note number (0–127)
-    velocity: int           # MIDI velocity value (1–127)
+    velocity: int           # minimum velocity of this sample's zone (1–127); zone extends to next_velocity - 1
     audio: np.ndarray       # shape: (n_samples,) mono float64, or (n_samples, n_ch)
     sr: int                 # sample rate in Hz
 

@@ -5,7 +5,9 @@
 # Each entry describes one recorded event:
 #
 #   note       — MIDI note number (0–127)
-#   velocity   — MIDI velocity at which it was recorded (1–127)
+#   velocity   — minimum velocity of this sample's zone (1–127)
+#                The zone covers [velocity, next_velocity - 1]; last zone extends to 127.
+#                The sample was recorded at this velocity (the zone floor).
 #   hold_s     — how long the note was held (seconds)
 #   tail_s     — how long of decay/silence was captured after note-off (seconds)
 #   is_release — true if this is a release tail sample, false for sustain

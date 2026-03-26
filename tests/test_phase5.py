@@ -180,10 +180,11 @@ class TestComputeNoteRanges:
 
 class TestComputeVelocityRanges:
     def test_no_crossfade_natural_boundaries(self):
+        # velocity = zone floor: [64,126] and [127,127]
         result = compute_velocity_ranges([64, 127], 0.0)
-        assert result[0]["lovel"] == 1
-        assert result[0]["hivel"] == 95
-        assert result[1]["lovel"] == 96
+        assert result[0]["lovel"] == 1    # first zone always anchored at 1
+        assert result[0]["hivel"] == 126  # 127 - 1
+        assert result[1]["lovel"] == 127
         assert result[1]["hivel"] == 127
 
     def test_no_crossfade_no_xfin_xfout(self):
@@ -198,10 +199,11 @@ class TestComputeVelocityRanges:
         assert result[0]["hivel"] == 127
 
     def test_crossfade_extends_boundaries(self):
+        # zone floor semantics: layer_60 natural zone = [60, 89]; xfade should push out from there
         result = compute_velocity_ranges([30, 60, 90, 120], 20.0)
         layer_60 = result[1]
-        assert layer_60["lovel"] < 46
-        assert layer_60["hivel"] > 75
+        assert layer_60["lovel"] < 60   # extends below zone floor
+        assert layer_60["hivel"] > 89   # extends above zone ceiling
         assert layer_60["has_xfin"] is True
         assert layer_60["has_xfout"] is True
 
@@ -222,10 +224,11 @@ class TestComputeVelocityRanges:
             assert result[i]["lovel"] == result[i - 1]["hivel"] + 1
 
     def test_xfin_range_correct(self):
+        # zone floor semantics: layer_90's lo_nat = 90 (the velocity itself)
         result = compute_velocity_ranges([30, 90], 50.0)
         layer_90 = result[1]
         assert layer_90["xfin_lovel"] == layer_90["lovel"]
-        assert layer_90["xfin_hivel"] == 61  # lo_nat for second layer
+        assert layer_90["xfin_hivel"] == 90  # lo_nat = zone floor = 90
 
     def test_clamped_to_1_127(self):
         result = compute_velocity_ranges([10, 120], 100.0)

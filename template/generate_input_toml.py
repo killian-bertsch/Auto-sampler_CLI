@@ -31,7 +31,9 @@ Usage examples:
 
 Arguments:
   --notes RANGE       Note range as start-end:interval  (e.g. 21-108:1)
-  --velocities LIST   Comma-separated MIDI velocity values (e.g. 1,64,127)
+  --velocities LIST   Comma-separated minimum velocities for each zone (e.g. 1,64,127)
+                      Zone[i] = [vel[i], vel[i+1]-1]; last zone extends to 127.
+                      Recording plays back at these exact velocities (zone floors).
   --hold-s FLOAT      Seconds each note was held
   --tail-s FLOAT      Seconds of decay/silence after note-off
   --with-release      Also add release tail entries after all sustain entries

@@ -95,6 +95,9 @@ def compute_velocity_ranges(
     For a sorted list of velocities, compute SFZ velocity zone boundaries
     with optional crossfade overlap.
 
+    Each velocity value is the MINIMUM (floor) of its zone:
+        zone[i] = [vels[i], vels[i+1] - 1]   (last zone extends to 127)
+
     crossfade_percent (0–100) is the fraction of each zone's natural width
     that extends into adjacent zones, enabling xfin/xfout crossfading.
 
@@ -106,8 +109,8 @@ def compute_velocity_ranges(
     n = len(vels)
     result = []
     for i, vc in enumerate(vels):
-        lo_nat = 1 if i == 0 else (vels[i - 1] + vc) // 2 + 1
-        hi_nat = 127 if i == n - 1 else (vc + vels[i + 1]) // 2
+        lo_nat = vc
+        hi_nat = 127 if i == n - 1 else vels[i + 1] - 1
 
         zone_width = hi_nat - lo_nat + 1
         xfade = int(crossfade_percent / 100.0 * zone_width)
