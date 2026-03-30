@@ -185,7 +185,7 @@ class TestProcessInstrument:
     def test_writes_flac_files(self, tmp_path):
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
         process_instrument(instr, tmp_path / "output")
-        flacs = list((tmp_path / "output" / "Piano" / "samples").glob("*.flac"))
+        flacs = list((tmp_path / "output" / "Piano" / "Piano-sustain").glob("*.flac"))
         assert len(flacs) > 0
 
     def test_with_release_samples(self, tmp_path):
@@ -193,7 +193,7 @@ class TestProcessInstrument:
         out = tmp_path / "output"
         assert process_instrument(instr, out) is True
         assert (out / "Organ" / "Organ_release.sfz").exists()
-        rel_flacs = list((out / "Organ" / "samples" / "release").glob("*.flac"))
+        rel_flacs = list((out / "Organ" / "Organ-release").glob("*.flac"))
         assert len(rel_flacs) > 0
 
     def test_skips_missing_input_toml(self, tmp_path):
@@ -244,7 +244,7 @@ class TestProcessInstrument:
         _make_output_toml(folder, "NonUniform")
         out = tmp_path / "output"
         assert process_instrument(folder, out) is True
-        flacs = list((out / "NonUniform" / "samples").glob("*.flac"))
+        flacs = list((out / "NonUniform" / "NonUniform-sustain").glob("*.flac"))
         assert len(flacs) == 6  # 4 + 2
 
 
@@ -350,7 +350,7 @@ class TestBulkProcessing:
         instr = _make_instrument_folder(tmp_path / "instruments", "Piano")
         out = tmp_path / "output"
         process_instrument(instr, out)
-        for flac in (out / "Piano" / "samples").glob("*.flac"):
+        for flac in (out / "Piano" / "Piano-sustain").glob("*.flac"):
             audio, sr = sf.read(str(flac))
             assert sr == SR
             assert len(audio) > 0

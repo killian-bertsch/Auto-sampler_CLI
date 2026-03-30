@@ -5,9 +5,9 @@ Output structure:
     {output_root}/{instrument_name}/
         {instrument_name}_sustain.sfz
         {instrument_name}_release.sfz   (if release samples exist)
-        samples/
+        {instrument_name}-sustain/
             {instrument_name}_{note_name}_v{velocity}.flac
-        samples/release/
+        {instrument_name}-release/
             {instrument_name}_{note_name}_v{velocity}_rel.flac
 
 Velocity zones are built per-note from whatever velocities were actually
@@ -196,7 +196,7 @@ def generate_sustain_sfz(regions: List[dict], meta: InstrumentMeta) -> str:
     amp_vel1 = _amp_velcurve_1(meta)
     lines = [
         "<control>",
-        "default_path=samples/",
+        f"default_path={meta.instrument_name}-sustain/",
         "",
         "<group>",
         f"ampeg_release={meta.ampeg_release:.3f}",
@@ -234,7 +234,7 @@ def generate_release_sfz(regions: List[dict], meta: InstrumentMeta) -> str:
     amp_vel1 = _amp_velcurve_1(meta)
     lines = [
         "<control>",
-        "default_path=samples/release/",
+        f"default_path={meta.instrument_name}-release/",
         "",
         "<group>",
         "trigger=release",
@@ -294,8 +294,8 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
     name = meta.instrument_name
 
     out_dir     = output_root / name
-    samples_dir = out_dir / "samples"
-    release_dir = samples_dir / "release"
+    samples_dir = out_dir / f"{name}-sustain"
+    release_dir = out_dir / f"{name}-release"
     samples_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Note subset selection ─────────────────────────────────────────────
@@ -357,12 +357,28 @@ def write_instrument(data: InstrumentData, output_root: Path) -> dict:
     # Velocity mode report
     if meta.normalize_mode == "velocity" and meta.computed_dynamic_range_db is not None:
         range_db = meta.computed_dynamic_range_db
+        _MAX_DB = 48.0
+        capped = range_db > _MAX_DB
+        recommended_db = _MAX_DB if capped else range_db
+        if capped:
+            extra_note = (
+                f"Note: measured range ({range_db:.1f} dB) exceeds AudioLayer's\n"
+                f"48 dB velocity curve limit. Normalization was capped at 48 dB;\n"
+                f"the remaining {range_db - _MAX_DB:.1f} dB of natural variation is\n"
+                f"preserved in the audio. Set velocity_dynamic_range to 48 dB.\n"
+            )
+        else:
+            extra_note = (
+                f"Set velocity_dynamic_range to {recommended_db:.1f} dB.\n"
+            )
         report = (
             f"Velocity Dynamic Range Report — {name}\n"
             f"{'=' * 50}\n\n"
-            f"Measured dynamic range: {range_db:.1f} dB\n\n"
+            f"Measured dynamic range : {range_db:.1f} dB\n"
+            f"Recommended setting    : {recommended_db:.1f} dB\n\n"
             f"Dynamics are fully baked into audio samples.\n"
-            f"SFZ amp_velcurve_1 = 1.0 (flat — no additional scaling).\n"
+            f"SFZ amp_velcurve_1 = 1.0 (flat — no additional scaling).\n\n"
+            + extra_note
         )
         (out_dir / "velocity_range.txt").write_text(report, encoding="utf-8")
 

@@ -140,19 +140,25 @@ def _normalize_by_velocity_layer(
 # Velocity mode (linear gain curve per note)
 # ---------------------------------------------------------------------------
 
+# AudioLayer sampler caps velocity curve dynamic range at this value.
+_AUDIOLAYER_MAX_DYNAMIC_RANGE_DB = 48.0
+
+
 def _apply_velocity_mode(data: InstrumentData, peak_db: float) -> None:
     """
     For each MIDI note in sustain, apply a linear gain curve so that
     velocity layers align with the peak level of the highest-velocity sample.
 
     The gain applied to velocity v is:
-        gain_db(v) = total_range_db * (127 - v) / 127
+        gain_db(v) = norm_range_db * (127 - v) / 127
 
-    This means vel=127 gets 0 dB gain and lower velocities get progressively
-    boosted, making all layers peak at the same level as the loudest sample.
+    where norm_range_db = min(total_range_db, 48.0).  If the measured range
+    exceeds the AudioLayer 48 dB sampler limit, normalization is capped at
+    48 dB, leaving the residual natural variation baked into the audio.
 
-    The average total_range_db across all notes is stored in
-    data.meta.computed_dynamic_range_db for the SFZ output module to use.
+    The average *measured* total_range_db (before capping) is stored in
+    data.meta.computed_dynamic_range_db so the report can show what was
+    measured and recommend the appropriate setting.
 
     After the per-note gain curve, a global peak ceiling is applied across
     all sustain samples.  Release samples are normalized per-velocity-layer
@@ -192,8 +198,11 @@ def _apply_velocity_mode(data: InstrumentData, peak_db: float) -> None:
         total_range_db = float(np.clip(slope * 127.0, 0.0, 60.0))
         total_range_values.append(total_range_db)
 
+        # Cap normalization at the AudioLayer limit; excess stays baked in
+        norm_range_db = min(total_range_db, _AUDIOLAYER_MAX_DYNAMIC_RANGE_DB)
+
         for s, v in zip(note_samples, velocities):
-            gain_db = total_range_db * (127.0 - float(v)) / 127.0
+            gain_db = norm_range_db * (127.0 - float(v)) / 127.0
             scale = 10.0 ** (gain_db / 20.0)
             s.audio = s.audio.astype(np.float64) * scale
 

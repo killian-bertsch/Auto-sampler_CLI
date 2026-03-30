@@ -1,0 +1,14 @@
+python advanced_sampler.py --max-layers 18 --minimum-distance 2 --tolerance "1-120:.3 118-127:.1" --sample-release --debug-note 44 test/new_pearl/analysis.flac
+
+# keyscape
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/140b/analysis.flac && 
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/200a/analysis.flac && 
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/c7/analysis.flac && 
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/felt-grand/analysis.flac && 
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/la-custom/analysis.flac && 
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/mk1/analysis.flac && 
+python advanced_sampler.py --max-layers 18 --minimum-distance 3 --tolerance "1-120:.2 118-127:.1" --sample-release --hold-ms 125 --gap-ms 250 library/keyscape/vintage-vibe/analysis.flac
+
+# electra_detaled
+
+python advanced_sampler.py --max-layers 25 --minimum-distance 3 --tolerance .05 --sample-release --hold-ms 125 --gap-ms 250 library/uad/electra_detailed/analysis.flac 

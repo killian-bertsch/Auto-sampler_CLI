@@ -432,6 +432,41 @@ def detect_sample_switches(note_data: dict, sr: int,
     return switches
 
 
+# ── Switch point grid visualizer ──────────────────────────────────────────────
+
+def print_switch_grid(switches: dict, start_note: int, end_note: int):
+    """Print an ASCII velocity×note grid highlighting sample switch points."""
+    notes = list(range(start_note, end_note + 1))
+    n = len(notes)
+
+    switch_set = set()
+    for note, sw_list in switches.items():
+        for vel in sw_list:
+            switch_set.add((note, vel))
+
+    total = sum(len(v) for v in switches.values())
+    print(f"\n── Velocity × Note Switch Map  ({total} switches) {'─' * max(0, 40 - len(str(total)))}")
+    print("   ■ = switch point   · = no switch")
+    print()
+
+    for vel in range(127, 0, -1):
+        row = "".join("■" if (note, vel) in switch_set else "·" for note in notes)
+        print(f"{vel:3d}│{row}")
+
+    print("   └" + "─" * n)
+
+    # Note name labels at every C note
+    name_chars = [' '] * n
+    for i, note in enumerate(notes):
+        if note % 12 == 0:
+            name = midi_note_to_name(note)
+            for j, ch in enumerate(name):
+                if i + j < n:
+                    name_chars[i + j] = ch
+    print("    " + ''.join(name_chars))
+    print()
+
+
 # ── Step 3: MIDI generation ────────────────────────────────────────────────────
 
 def _velocities_for_note(switches: dict, note: int) -> list:
@@ -592,6 +627,14 @@ def main():
 
     args = parser.parse_args()
 
+    # ── Resolve output stem relative to the input file's directory ────────────
+    import os as _os
+    _input_dir = _os.path.dirname(_os.path.abspath(args.analyze_flac))
+    # If the user gave a bare stem (no directory separator), place it next to the input file.
+    # If they gave an explicit path (relative or absolute), respect it as-is.
+    if _os.sep not in args.output and (not _os.path.dirname(args.output)):
+        args.output = _os.path.join(_input_dir, args.output)
+
     # ── Load FLAC ──────────────────────────────────────────────────────────────
     print(f"Loading: {args.analyze_flac}")
     audio, sr = sf.read(args.analyze_flac, dtype="float32")
@@ -640,6 +683,8 @@ def main():
                 name = midi_note_to_name(note)
                 print(f"    {name:5s} ({note:3d}): switch at vel {sw}")
 
+    print_switch_grid(switches, args.start_note, args.end_note)
+
     # ── Step 3: generate sampler MIDI ─────────────────────────────────────────
     midi_path = args.output + ".mid"
     print(f"\nStep 3: Generating {midi_path} ...")
@@ -660,7 +705,7 @@ def main():
     print(f"  Total recording time: {total_time:.0f} s  ({total_time / 60:.1f} min)")
 
     # ── Step 4: generate input.toml ───────────────────────────────────────────
-    toml_path = args.output + "_input.toml"
+    toml_path = _os.path.join(_os.path.dirname(args.output), "input.toml")
     print(f"\nStep 4: Generating {toml_path} ...")
     generate_input_toml(events, args.collapse_to_mono, toml_path)
 

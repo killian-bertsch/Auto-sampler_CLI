@@ -401,7 +401,7 @@ class TestGenerateSustainSfz:
     def test_default_path_samples(self):
         meta = _make_meta()
         sfz = generate_sustain_sfz([self._make_region()], meta)
-        assert "default_path=samples/" in sfz
+        assert "default_path=TestInstrument-sustain/" in sfz
 
     def test_multiple_regions(self):
         meta = _make_meta()
@@ -452,7 +452,7 @@ class TestGenerateReleaseSfz:
     def test_default_path_samples_release(self):
         meta = _make_meta()
         sfz = generate_release_sfz([self._make_region()], meta)
-        assert "default_path=samples/release/" in sfz
+        assert "default_path=TestInstrument-release/" in sfz
 
     def test_region_fields(self):
         meta = _make_meta()
@@ -490,20 +490,20 @@ class TestWriteInstrument:
     def test_flac_files_created(self, tmp_path):
         data = _make_data([60, 72], [64, 100])
         result = write_instrument(data, tmp_path)
-        flac_files = list((Path(result["output_dir"]) / "samples").glob("*.flac"))
+        flac_files = list((Path(result["output_dir"]) / "TestInstrument-sustain").glob("*.flac"))
         assert len(flac_files) == 4
         assert result["files_written"] == 4
 
     def test_release_flac_files_created(self, tmp_path):
         data = _make_data([60], [64, 100], with_release=True)
         result = write_instrument(data, tmp_path)
-        flac_files = list((Path(result["output_dir"]) / "samples" / "release").glob("*.flac"))
+        flac_files = list((Path(result["output_dir"]) / "TestInstrument-release").glob("*.flac"))
         assert len(flac_files) == 2
 
     def test_flac_files_readable(self, tmp_path):
         data = _make_data([60], [64])
         write_instrument(data, tmp_path)
-        for f in (tmp_path / "TestInstrument" / "samples").glob("*.flac"):
+        for f in (tmp_path / "TestInstrument" / "TestInstrument-sustain").glob("*.flac"):
             audio, sr = sf.read(str(f))
             assert sr == 44100
             assert len(audio) > 0
@@ -602,7 +602,7 @@ class TestWriteInstrument:
     def test_samples_dir_created(self, tmp_path):
         data = _make_data([60], [64])
         write_instrument(data, tmp_path)
-        assert (tmp_path / "TestInstrument" / "samples").is_dir()
+        assert (tmp_path / "TestInstrument" / "TestInstrument-sustain").is_dir()
 
     def test_multiple_instruments_do_not_collide(self, tmp_path):
         data_a = _make_data([60], [64], instrument_name="PianoA")

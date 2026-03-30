@@ -1,5 +1,5 @@
 """
-Normalize all sustain.flac / release.flac files in input/source to -6 dBFS peak.
+Normalize audio files to -6 dBFS peak.
 
 Strategy (streaming, two-pass — no full file held in RAM):
   Pass 1: read file in blocks, track global absolute peak
@@ -7,7 +7,9 @@ Strategy (streaming, two-pass — no full file held in RAM):
   Then atomically replace the original.
 
 Usage:
+    python normalize_source.py file1.flac file2.flac ...
     python normalize_source.py [--source-dir input/source] [--target-db -6.0] [--dry-run]
+    python normalize_source.py --dir some/folder [--target-db -6.0] [--dry-run]
 """
 
 import argparse
@@ -83,27 +85,42 @@ def normalize_file(path: str, target_db: float, dry_run: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Normalize source FLAC files to target peak dBFS.")
-    parser.add_argument("--source-dir", default="input/source")
+    parser = argparse.ArgumentParser(description="Normalize audio files to target peak dBFS.")
+    parser.add_argument("files", nargs="*", help="Audio files to normalize (e.g. x.flac y.flac)")
+    parser.add_argument("--source-dir", default=None, help="Scan a directory for sustain.flac/release.flac instead")
+    parser.add_argument("--dir", default=None, help="Recursively find and normalize all .flac files under a directory")
     parser.add_argument("--target-db", type=float, default=TARGET_DB_DEFAULT)
     parser.add_argument("--dry-run", action="store_true", help="Print what would happen, no writes")
     args = parser.parse_args()
 
-    source_dir = args.source_dir
-    if not os.path.isdir(source_dir):
-        sys.exit(f"Source directory not found: {source_dir}")
-
     files_to_process: list[str] = []
-    for entry in sorted(os.scandir(source_dir), key=lambda e: e.name):
-        if not entry.is_dir():
-            continue
-        for fname in ("sustain.flac", "release.flac"):
-            fpath = os.path.join(entry.path, fname)
-            if os.path.isfile(fpath):
-                files_to_process.append(fpath)
+
+    if args.files:
+        for f in args.files:
+            if not os.path.isfile(f):
+                sys.exit(f"File not found: {f}")
+            files_to_process.append(f)
+    elif args.dir:
+        if not os.path.isdir(args.dir):
+            sys.exit(f"Directory not found: {args.dir}")
+        for root, _, files in os.walk(args.dir):
+            for fname in sorted(files):
+                if fname.lower().endswith(".flac"):
+                    files_to_process.append(os.path.join(root, fname))
+    else:
+        source_dir = args.source_dir or "input/source"
+        if not os.path.isdir(source_dir):
+            sys.exit(f"Source directory not found: {source_dir}")
+        for entry in sorted(os.scandir(source_dir), key=lambda e: e.name):
+            if not entry.is_dir():
+                continue
+            for fname in ("sustain.flac", "release.flac"):
+                fpath = os.path.join(entry.path, fname)
+                if os.path.isfile(fpath):
+                    files_to_process.append(fpath)
 
     if not files_to_process:
-        sys.exit("No sustain.flac / release.flac files found.")
+        sys.exit("No audio files found to process.")
 
     print(f"Target: {args.target_db:+.1f} dBFS peak")
     print(f"Files:  {len(files_to_process)}")
